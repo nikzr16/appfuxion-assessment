@@ -42,7 +42,7 @@ PRD yet; their numbers are expectations from the local feature map.
 
 | PRD | Module | Status | Notes |
 |---|---|---|---|
-| `docs/prd/0000-setup-prd.md` | `backend/app/core/`, `frontend/`, `db/`, CI | in-progress | Reserved number 0000; built and verified locally, awaiting first CI run |
+| `docs/prd/0000-setup-prd.md` | `backend/app/core/`, `frontend/`, `db/`, CI | shipped | Reserved number 0000; CI run #1 green (2026-10-26) |
 
 ### Phase 1: Core Pipeline (brief Parts 1–5)
 
@@ -92,18 +92,18 @@ PRD yet; their numbers are expectations from the local feature map.
 
 | Concern | Introduced In | Matured In | Current State |
 |---|---|---|---|
-| Docker Compose (full stack) | 0000 | 0006 | planned |
-| CI (GitHub Actions) | 0000 | each feature | planned |
-| LLM client (tokens, fakes, retries) | 0000 | 0007, 0008 | planned |
-| Persistence (Postgres + pgvector, Alembic) | 0000 | 0010 | planned |
-| Observability | 0000 (logging) | 0007 | planned |
-| ENGINEERING_NOTES.md | 0000 (stub) | every feature | planned |
+| Docker Compose (full stack) | 0000 | 0006 | db + backend + frontend run with one command |
+| CI (GitHub Actions) | 0000 | each feature | backend + frontend jobs green |
+| LLM client (tokens, fakes, retries) | 0000 | 0007, 0008 | client seam + FakeLLM + token capture |
+| Persistence (Postgres + pgvector, Alembic) | 0000 | 0010 | Postgres 18, pgvector enabled by baseline migration |
+| Observability | 0000 (logging) | 0007 | JSON logging + `document_id` context var |
+| ENGINEERING_NOTES.md | 0000 (stub) | every feature | stub with architecture decisions |
 
 ## PRD Registry
 
 | PRD | Phase | Module | Status |
 |---|---|---|---|
-| `docs/prd/0000-setup-prd.md` | 0 | foundation | in-progress |
+| `docs/prd/0000-setup-prd.md` | 0 | foundation | shipped |
 
 ## Prioritization Log
 
