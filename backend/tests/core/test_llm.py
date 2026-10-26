@@ -1,3 +1,5 @@
+import logging
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -9,11 +11,14 @@ from app.core.config import Settings
 from app.core.errors import LLMError, LLMOutputError
 from app.core.llm import (
     FakeLLM,
+    LLMCallRecord,
     LLMResponse,
     OpenAILLMClient,
     TokenUsage,
     ToolCall,
+    register_llm_recorder,
 )
+from app.core.logging import TraceLabels, bind_document_id, bind_trace
 
 
 class Answer(BaseModel):
@@ -226,3 +231,131 @@ def test_real_client_requires_api_key_but_construction_is_lazy() -> None:
     with pytest.raises(LLMError) as excinfo:
         OpenAILLMClient(settings())  # no OPENAI_API_KEY and no injected SDK client
     assert excinfo.value.code == "llm_not_configured"
+
+
+# -- Recording (feature 0007) -------------------------------------------------------
+
+
+@pytest.fixture
+def records() -> Iterator[list[LLMCallRecord]]:
+    """A list-appending recorder (the real ledger recorder is tested in observability)."""
+    seen: list[LLMCallRecord] = []
+    register_llm_recorder(seen.append)
+    yield seen
+    register_llm_recorder(None)
+
+
+def test_every_call_is_recorded_with_labels_usage_and_latency(
+    records: list[LLMCallRecord],
+) -> None:
+    fake = FakeLLM(["hi"], usage=TokenUsage(prompt_tokens=8, completion_tokens=2))
+    with (
+        bind_document_id("doc-1"),
+        bind_trace(run_id="run-1", agent="document", purpose="summary", prompt_version="v9"),
+        bind_trace(step_index=3),
+    ):
+        fake.complete([])
+
+    [record] = records
+    assert record.kind == "chat"
+    assert record.status == "ok"
+    assert record.error_code is None
+    assert record.model == "fake-model"
+    assert record.usage == TokenUsage(prompt_tokens=8, completion_tokens=2)
+    assert record.latency_ms >= 0
+    assert record.started_at.tzinfo is not None
+    assert record.labels == TraceLabels(
+        document_id="doc-1",
+        run_id="run-1",
+        agent="document",
+        purpose="summary",
+        prompt_version="v9",
+        step_index=3,
+    )
+
+
+def test_failed_calls_are_recorded_with_their_code_and_still_raise(
+    records: list[LLMCallRecord],
+) -> None:
+    fake = FakeLLM([LLMError("boom")])
+    with bind_trace(purpose="agent_loop"), pytest.raises(LLMError):
+        fake.complete([])
+    with bind_trace(purpose="structured_extraction"), pytest.raises(LLMOutputError):
+        FakeLLM(['{"vendor": 1, "total": null}']).complete([], response_format=Answer)
+
+    assert [(r.status, r.error_code, r.usage) for r in records] == [
+        ("error", "llm_error", TokenUsage()),
+        ("error", "llm_invalid_output", TokenUsage()),
+    ]
+
+
+def test_openai_client_records_reported_model_and_failures(
+    records: list[LLMCallRecord],
+) -> None:
+    ok = OpenAILLMClient(settings(), client=stub_sdk(create=lambda **_: completion("x")))
+
+    def broken(**kwargs: Any) -> Any:
+        raise openai.OpenAIError("down")
+
+    failing = OpenAILLMClient(settings(), client=stub_sdk(create=broken))
+    with bind_trace(purpose="summary"):
+        ok.complete([])
+        with pytest.raises(LLMError):
+            failing.complete([])
+
+    assert [(r.model, r.status, r.usage.total_tokens) for r in records] == [
+        ("gpt-test-2026", "ok", 18),
+        ("text-model", "error", 0),
+    ]
+
+
+def test_embeddings_default_to_the_embedding_purpose(records: list[LLMCallRecord]) -> None:
+    FakeLLM().embed(["a b c"])
+
+    [record] = records
+    assert (record.kind, record.labels.purpose, record.usage.prompt_tokens) == (
+        "embedding",
+        "embedding",
+        3,
+    )
+
+
+def test_unlabelled_chat_call_is_recorded_as_unknown_with_a_warning(
+    records: list[LLMCallRecord], caplog: pytest.LogCaptureFixture
+) -> None:
+    FakeLLM(["hi"]).complete([])
+
+    assert records[0].labels.purpose == "unknown"
+    assert "llm.call without purpose" in caplog.text
+
+
+def test_a_failing_recorder_never_breaks_the_call(caplog: pytest.LogCaptureFixture) -> None:
+    def explode(record: LLMCallRecord) -> None:
+        raise RuntimeError("database down")
+
+    register_llm_recorder(explode)
+    try:
+        with bind_trace(purpose="summary"):
+            response = FakeLLM(["still fine"]).complete([])
+    finally:
+        register_llm_recorder(None)
+
+    assert response.content == "still fine"
+    assert "llm.call not recorded" in caplog.text
+
+
+def test_each_call_logs_one_llm_call_line_without_message_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.core.llm")
+    with bind_trace(purpose="summary"):
+        FakeLLM(["reply text"]).complete([{"role": "user", "content": "secret prompt"}])
+        with pytest.raises(LLMError):
+            FakeLLM([LLMError("boom")]).complete([])
+
+    lines = [r for r in caplog.records if r.getMessage() == "llm.call"]
+    assert [r.levelno for r in lines] == [logging.INFO, logging.ERROR]
+    assert lines[0].prompt_tokens == 10  # type: ignore[attr-defined]
+    assert lines[1].error_code == "llm_error"  # type: ignore[attr-defined]
+    assert "secret prompt" not in caplog.text
+    assert "reply text" not in caplog.text

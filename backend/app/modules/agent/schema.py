@@ -80,3 +80,15 @@ class AgentRunRead(BaseModel):
     completion_tokens: int
     started_at: datetime
     finished_at: datetime | None
+
+
+class RunStats(BaseModel):
+    """Agent runs in a window and how long the completed ones took (feature 0007 metrics)."""
+
+    total: int
+    running: int
+    completed: int
+    failed: int
+    avg_ms: int | None
+    p50_ms: int | None
+    p95_ms: int | None

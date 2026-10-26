@@ -34,8 +34,12 @@ const ROLE_OF_TOOL: Record<string, AgentRole> = {
   search_similar_invoices: "reporting",
 };
 
+export function roleOfTool(tool: string): AgentRole {
+  return ROLE_OF_TOOL[tool] ?? "other";
+}
+
 export function roleOfStep(step: ToolStep): AgentRole {
-  return ROLE_OF_TOOL[step.tool] ?? "other";
+  return roleOfTool(step.tool);
 }
 
 export interface Lane {

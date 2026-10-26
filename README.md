@@ -10,7 +10,8 @@ searchable with pgvector.
 > document and the **Document Agent** extracts its text (PDF parser or OpenAI vision),
 > turns it into structured JSON, validates it with deterministic code, converts a foreign
 > total to `BASE_CURRENCY` when needed, and writes a summary that mentions every validation
-> problem. The UI and the bonus tasks land in later numbered features; see
+> problem. The web UI (`0006`) and observability (`0007`: a token ledger, per-document traces
+> and a metrics page) are in place; the other bonus tasks land in later numbered features; see
 > [`docs/product-roadmap.md`](docs/product-roadmap.md).
 
 ## Stack
@@ -51,6 +52,12 @@ Open http://localhost:8080 (or http://localhost:5173 in local development).
    highlighted on the value it concerns; click it to jump there), the currency conversion,
    the raw text and earlier runs. A failed document shows the reason and any data saved
    before the failure. **Reprocess** runs the whole agent again after a confirmation.
+   The **Trace** card shows where the time and tokens went: processing and queue time, LLM
+   calls, tokens and estimated cost, and a timeline of every tool step with the LLM calls made
+   in it (pick an earlier run from the menu). Each agent lane shows its own tokens and cost.
+4. **Metrics** — documents, success rate, average / p95 processing time, tokens and estimated
+   cost per document, and LLM usage by model and by purpose, for the last 7 or 30 days or all
+   time.
 
 The header shows the backend's health and a System / Light / Dark theme switch.
 
@@ -81,7 +88,21 @@ The header shows the backend's health and a System / Light / Dark theme switch.
    curl http://localhost:8080/api/documents/<document_id>/runs
    ```
 
-5. Optional: run the whole agent again (text and data are re-extracted):
+5. Optional: see the run's trace — timing, every LLM call (purpose, model, tokens, estimated
+   cost, latency) and the tool steps they ran in (`?run_id=` for an earlier run):
+
+   ```bash
+   curl http://localhost:8080/api/documents/<document_id>/trace
+   ```
+
+6. Optional: product-wide numbers (documents, success rate, processing time, tokens, cost;
+   `?days=7` for a window):
+
+   ```bash
+   curl http://localhost:8080/api/metrics/summary
+   ```
+
+7. Optional: run the whole agent again (text and data are re-extracted):
 
    ```bash
    curl -X POST http://localhost:8080/api/documents/<document_id>/reprocess
@@ -91,6 +112,12 @@ The header shows the backend's health and a System / Light / Dark theme switch.
 `result_unavailable` (with the error) when processing failed. The intermediate steps are also
 readable on their own: `GET /api/documents/<document_id>/text` and `/extraction`.
 `GET /api/config` returns the upload limit and accepted file types the UI uses.
+
+Every LLM call is recorded in the `llm_calls` table (counts and timings only — never prompts,
+replies or document text), and every backend log line written while a document is processed
+is JSON carrying its `document_id` and `run_id`, so one document's story can be followed with
+`docker compose logs backend | grep <document_id>`. Costs are estimates from a static price
+table dated 2026-10-27.
 
 The backend waits for the database, applies the Alembic migrations (which enable the
 `vector` extension), then starts. The app and `/api/health` work without an

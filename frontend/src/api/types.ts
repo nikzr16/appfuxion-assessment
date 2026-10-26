@@ -150,3 +150,123 @@ export interface ClientConfig {
   accepted_content_types: string[];
   base_currency: string;
 }
+
+// -- Observability (0007) ------------------------------------------------------------
+// Estimated costs are USD decimal strings (6 places) or `null` for an unpriced model.
+
+export type LLMCallStatus = "ok" | "error";
+
+export interface UsageTotals {
+  llm_calls: number;
+  failed_calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: string | null;
+  /** False when some calls used a model missing from the price table. */
+  cost_complete: boolean;
+}
+
+export interface GroupTotals extends UsageTotals {
+  key: string;
+  avg_latency_ms: number;
+}
+
+export interface TraceRun {
+  run_id: string;
+  mode: AgentMode;
+  trigger: RunTrigger;
+  status: RunStatus;
+  error_code: string | null;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+  queue_ms: number | null;
+  processing_ms: number | null;
+  run_prompt_tokens: number;
+  run_completion_tokens: number;
+}
+
+export interface ToolSpan {
+  kind: "tool";
+  step_index: number;
+  turn: number;
+  tool: string;
+  status: StepStatus;
+  error_code: string | null;
+  started_at: string;
+  offset_ms: number;
+  duration_ms: number;
+}
+
+export interface LLMSpan {
+  kind: "llm";
+  id: string;
+  /** The tool step the call was made in; `null` for the agent's own turns. */
+  step_index: number | null;
+  purpose: string;
+  agent: string | null;
+  model: string;
+  prompt_version: string | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: string | null;
+  status: LLMCallStatus;
+  error_code: string | null;
+  started_at: string;
+  offset_ms: number;
+  duration_ms: number;
+}
+
+export type TraceSpan = ToolSpan | LLMSpan;
+
+export interface DocumentTrace {
+  document_id: string;
+  uploaded_at: string;
+  run: TraceRun | null;
+  llm_calls_recorded: boolean;
+  totals: UsageTotals;
+  by_purpose: GroupTotals[];
+  by_agent: GroupTotals[];
+  spans: TraceSpan[];
+  prices_as_of: string;
+}
+
+export interface RunStats {
+  total: number;
+  running: number;
+  completed: number;
+  failed: number;
+  avg_ms: number | null;
+  p50_ms: number | null;
+  p95_ms: number | null;
+}
+
+export interface DocumentMetrics {
+  total: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  success_rate: number | null;
+}
+
+export interface LLMMetrics extends UsageTotals {
+  error_rate: number | null;
+  documents_with_usage: number;
+  avg_tokens_per_document: number | null;
+  avg_cost_per_document: string | null;
+}
+
+export interface MetricsSummary {
+  window_days: number | null;
+  since: string | null;
+  generated_at: string;
+  ledger_since: string | null;
+  documents: DocumentMetrics;
+  runs: RunStats;
+  llm: LLMMetrics;
+  by_model: GroupTotals[];
+  by_purpose: GroupTotals[];
+  prices_as_of: string;
+}

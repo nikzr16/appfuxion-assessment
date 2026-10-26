@@ -31,10 +31,11 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app.core.db import Base, SessionLocal, engine  # noqa: E402
-from app.core.llm import FakeLLM, get_llm_client  # noqa: E402
+from app.core.llm import FakeLLM, get_llm_client, register_llm_recorder  # noqa: E402
 from app.core.storage import LocalStorage, get_storage  # noqa: E402
 from app.main import app  # noqa: E402
 from app.modules.documents.pipeline import register_pipeline_runner  # noqa: E402
+from app.modules.observability.service import record_llm_call  # noqa: E402
 
 
 def _ensure_test_database() -> None:
@@ -92,6 +93,24 @@ def no_pipeline() -> Iterator[None]:
     register_pipeline_runner(None)
     yield
     register_pipeline_runner(None)
+
+
+@pytest.fixture(autouse=True)
+def no_llm_recorder() -> Iterator[None]:
+    """LLM calls in tests are not written to the ledger unless a test opts in.
+
+    ``app.main`` registers the ledger recorder at import; most tests make LLM calls with no
+    real document or run behind their labels, so recording is off by default.
+    """
+    register_llm_recorder(None)
+    yield
+    register_llm_recorder(None)
+
+
+@pytest.fixture
+def llm_recorder() -> None:
+    """Opt in: every LLM call in this test writes a real ``llm_calls`` row (feature 0007)."""
+    register_llm_recorder(record_llm_call)
 
 
 @pytest.fixture

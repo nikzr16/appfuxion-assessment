@@ -27,15 +27,17 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 .
 ├── backend/
 │   ├── app/
-│   │   ├── main.py                 # create_app(), ROUTERS list, /api prefix, registers the agent pipeline
-│   │   ├── models.py               # model registry imported by Alembic (agent, documents, text_extraction, structured_extraction)
+│   │   ├── main.py                 # create_app(), ROUTERS list, /api prefix, registers the agent pipeline and the LLM ledger recorder
+│   │   ├── models.py               # model registry imported by Alembic (agent, documents, observability, text_extraction, structured_extraction)
 │   │   ├── core/
 │   │   │   ├── config.py           # pydantic-settings Settings, get_settings()
 │   │   │   ├── db.py               # engine, SessionLocal, Base, get_db
-│   │   │   ├── llm.py              # LLMClient, OpenAILLMClient, FakeLLM, TokenUsage, LLMResponse (parsed, refusal)
+│   │   │   ├── llm.py              # LLMClient, OpenAILLMClient, FakeLLM, TokenUsage, LLMResponse (parsed, refusal);
+│   │   │   │                       # Purpose / Agent labels, LLMCallRecord, register_llm_recorder, one `llm.call` log per call
 │   │   │   ├── storage.py          # Storage protocol, LocalStorage (save, save_as), get_storage
 │   │   │   ├── errors.py           # AppError hierarchy (incl. ConflictError 409, LLMOutputError) + handlers (app, HTTP, request validation)
-│   │   │   └── logging.py          # JSON formatter, document_id context var
+│   │   │   └── logging.py          # JSON formatter; trace context vars (document_id, run_id, agent, purpose,
+│   │   │                           # prompt_version, step_index), bind_document_id, bind_trace, trace_labels
 │   │   └── modules/
 │   │       ├── health/             # router.py, service.py, schema.py
 │   │       ├── documents/          # model, crud, schema, service, router, pipeline (hook + register_pipeline_runner)
@@ -43,14 +45,16 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   │       ├── structured_extraction/  # model, crud, schema (InvoiceData), service, router, prompts
 │   │       ├── validation/         # pure: schema (report, issue codes), service (validate_invoice, convert_currency), currencies (data)
 │   │       ├── agent/              # model, crud, schema, service, router, prompts, runner (AgentRunner), tools (5 document tools)
+│   │       ├── observability/      # model (llm_calls), crud, schema, service (recorder, trace, metrics), router, pricing
 │   │       └── client_config/      # router, service, schema: GET /api/config (no DB)
 │   ├── migrations/
 │   │   ├── env.py                  # URL from settings, metadata from app.models
 │   │   ├── script.py.mako
 │   │   └── versions/               # 0001_enable_pgvector.py, 0002_create_documents.py, 0003_create_document_texts.py,
-│   │                               # 0004_create_extractions.py, 0005_create_agent_runs.py
+│   │                               # 0004_create_extractions.py, 0005_create_agent_runs.py, 0006_create_llm_calls.py
 │   ├── tests/
-│   │   ├── conftest.py             # test DB, migrate once, client / fake_llm / storage fixtures, no-op pipeline by default
+│   │   ├── conftest.py             # test DB, migrate once, client / fake_llm / storage fixtures, no-op pipeline and
+│   │   │                           # no LLM recorder by default (opt in: agent_pipeline, llm_recorder)
 │   │   ├── core/                   # test_llm, test_storage, test_errors, test_logging
 │   │   ├── modules/health/         # test_router, test_service
 │   │   ├── modules/documents/      # conftest (byte samples, pipeline spy), test_router, test_service
@@ -58,6 +62,7 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   │   ├── modules/structured_extraction/  # conftest (make_document with text, invoice()), test_schema, test_service, test_router
 │   │   ├── modules/validation/     # conftest (make_invoice(), line(), TODAY), test_validate_invoice, test_convert_currency, test_currencies, test_schema, test_layering
 │   │   ├── modules/agent/          # conftest (tool_turn, text_turn, happy_script, agent_pipeline), test_runner, test_tools, test_service, test_router
+│   │   ├── modules/observability/  # conftest (reuses agent fixtures), test_pricing, test_service, test_router, test_layering
 │   │   ├── modules/client_config/  # test_router, test_service
 │   │   └── test_app.py, test_config.py, test_migrations.py
 │   ├── alembic.ini
@@ -71,14 +76,15 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   ├── public/favicon.svg
 │   ├── src/
 │   │   ├── main.tsx                # Poppins (Latin), QueryClientProvider, createBrowserRouter
-│   │   ├── App.tsx                 # route table: / (Upload), /documents, /documents/:id, * (not found)
-│   │   ├── index.css               # Tailwind, `.dark` variant, semantic colour tokens (light + dark), base styles
+│   │   ├── App.tsx                 # route table: / (Upload), /documents, /documents/:id, /metrics, * (not found)
+│   │   ├── index.css               # Tailwind, `.dark` variant, semantic colour tokens (light + dark, incl. trace series), base styles
 │   │   ├── api/
 │   │   │   ├── client.ts           # request(), ApiError (network_error for failed fetch), one function per endpoint (+ test)
 │   │   │   ├── types.ts            # DTO types mirroring the backend schemas (money/dates as strings)
 │   │   │   └── queries.ts          # TanStack Query keys + hooks, POLL_INTERVAL_MS (10 s), PAGE_SIZE (20), mutations
 │   │   ├── lib/                    # pure logic, each with a test: format (money/dates/sizes), issues (path → target),
-│   │   │                           # agents (tool → role lanes), upload (client checks, MAX_FILES 5), errors (friendly text),
+│   │   │                           # agents (tool → role lanes), trace (timeline rows, bar geometry, usage per lane),
+│   │   │                           # upload (client checks, MAX_FILES 5), errors (friendly text),
 │   │   │                           # theme, cx, useDocumentTitle
 │   │   ├── components/
 │   │   │   ├── ui/                 # Button (+ buttonClasses), Badge, Card, Alert/ErrorAlert, Dialog (native <dialog>),
@@ -89,10 +95,12 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   │   ├── features/
 │   │   │   ├── upload/             # UploadPage, DropZone, UploadQueue, useUploadQueue (two uploads at a time) (+ page test)
 │   │   │   ├── documents/          # DocumentsPage (URL filter/page, polling), DocumentsTable (table ≥ sm, cards < sm) (+ test)
-│   │   │   └── detail/             # DocumentDetailPage (processing / completed / failed / not found), SummaryCard,
-│   │   │                           # StructuredData, LineItemsTable, IssuesList, IssueMarker, ConversionCard,
-│   │   │                           # RawTextSection (lazy), AgentActivity + AgentLanes (multi-agent view),
-│   │   │                           # ReprocessButton (confirm dialog), labels (+ page test)
+│   │   │   ├── detail/             # DocumentDetailPage (processing / completed / failed / not found), SummaryCard,
+│   │   │   │                       # StructuredData, LineItemsTable, IssuesList, IssueMarker, ConversionCard,
+│   │   │   │                       # RawTextSection (lazy), AgentActivity + AgentLanes (multi-agent view, tokens per lane),
+│   │   │   │                       # TraceSection + TraceTimeline (0007 waterfall), ReprocessButton (confirm dialog),
+│   │   │   │                       # labels (+ page and TraceSection tests)
+│   │   │   └── metrics/            # MetricsPage (/metrics: KPI tiles, by model / by purpose, ?days= window) (+ test)
 │   │   ├── pages/NotFoundPage.tsx
 │   │   └── test/                   # setup (jsdom polyfills), fetchMock (route-based fetch stub), fixtures, render (whole app)
 │   ├── vite.config.ts              # React + Tailwind plugins, /api dev proxy, Vitest config
@@ -125,6 +133,8 @@ forward `/api` to the backend.
 | GET | `/api/documents/{document_id}/result` | `agent` | 200 `AgentResult` when `completed` (latest completed run); 409 `result_not_ready` (`processing`) / `result_unavailable` (`failed`, message includes the document's error); 404; 422. Read-only |
 | POST | `/api/documents/{document_id}/reprocess` | `agent` | 202 `DocumentUploadResponse` (`processing`) and a background agent run with forced re-extraction; 409 `already_processing`; 404; 422; 502 `llm_not_configured` |
 | GET | `/api/documents/{document_id}/runs` | `agent` | 200 `AgentRunRead[]`, newest first, each with its tool-call `steps`; 404; 422 |
+| GET | `/api/documents/{document_id}/trace` | `observability` | `?run_id=` (default: latest run) → 200 `DocumentTrace`; 404 `not_found` (document) / `run_not_found` (run not of this document); 422 non-UUID. A document with no run yet → `run: null`, `spans: []`. Read-only |
+| GET | `/api/metrics/summary` | `observability` | `?days=1..365` (default: all time) → 200 `MetricsSummary`, computed live; 422 out of range |
 | GET | `/api/config` | `client_config` | 200 `ClientConfig` — public settings for the UI; no secrets, no DB |
 | GET | `/api/docs` | FastAPI | Swagger UI (`/api/openapi.json` for the schema) |
 
@@ -158,12 +168,23 @@ forward `/api` to the backend.
 | `ToolStep` | `agent` | `index`, `turn` (model turn, 1-based), `tool`, `arguments`, `status`, `result` (exactly what the model was sent; never raw text), `error: {code, message} \| null`, `duration_ms`, `started_at` |
 | `AgentResult` | `agent` | `document_id`, `structured_data: InvoiceData`, `validation: ValidationReport`, `conversion: ConversionResult \| null`, `summary` — body of `GET /result`, stored in `agent_runs.result` |
 | `AgentRunRead` | `agent` | every `agent_runs` column except `result` |
+| `UsageTotals` | `observability` | `llm_calls`, `failed_calls`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost_usd: Decimal \| null` (sum of known costs; 0 with no calls; null when calls exist but none is priced), `cost_complete` (false when some model is unpriced) |
+| `GroupTotals` | `observability` | `UsageTotals` + `key` (purpose, agent or model), `avg_latency_ms` |
+| `TraceRun` | `observability` | `run_id`, `mode`, `trigger`, `status`, `error_code`, `error`, `started_at`, `finished_at`, `queue_ms` (upload runs only: upload → run start), `processing_ms` (null while running), `run_prompt_tokens`, `run_completion_tokens` (0005 run totals) |
+| `ToolSpan` | `observability` | `kind: "tool"`, `step_index`, `turn`, `tool`, `status`, `error_code`, `started_at`, `offset_ms` (from run start), `duration_ms` |
+| `LLMSpan` | `observability` | `kind: "llm"`, `id`, `step_index` (null for agent-loop turns), `purpose`, `agent`, `model`, `prompt_version`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost_usd`, `status: ok \| error`, `error_code`, `started_at`, `offset_ms`, `duration_ms` |
+| `DocumentTrace` | `observability` | `document_id`, `uploaded_at`, `run: TraceRun \| null`, `llm_calls_recorded` (false for runs before 0007), `totals: UsageTotals`, `by_purpose` / `by_agent: GroupTotals[]` (timeline order), `spans: (ToolSpan \| LLMSpan)[]` (start order; a step before the calls made in it), `prices_as_of` |
+| `MetricsSummary` | `observability` | `window_days`, `since`, `generated_at`, `ledger_since` (earliest ledger row), `documents {total, processing, completed, failed, success_rate}`, `runs: RunStats`, `llm` (`UsageTotals` + `error_rate`, `documents_with_usage`, `avg_tokens_per_document`, `avg_cost_per_document` over completed runs that have ledger rows), `by_model` / `by_purpose: GroupTotals[]` (most tokens first), `prices_as_of` |
+| `RunStats` | `agent` | `total`, `running`, `completed`, `failed`, `avg_ms`, `p50_ms`, `p95_ms` (completed runs; `percentile_cont`) — `agent.service.run_stats`, part of `MetricsSummary` |
+| `DocumentCounts` (internal) | `documents` | `processing`, `completed`, `failed` — `documents.service.count_by_status` |
+| `LLMCallRecord` (internal) | `core/llm.py` | `kind: chat \| embedding`, `model`, `usage`, `latency_ms`, `status`, `error_code`, `started_at`, `labels: TraceLabels` — handed to the registered recorder; never prompts or replies |
 | `ClientConfig` | `client_config` | `max_upload_mb: int`, `accepted_content_types: string[]` (sorted; the same set the upload service accepts), `base_currency` |
 | Error body | `core/errors.py` | `{"error": {"code": str, "message": str, "details"?: any}}` — used for `AppError`, framework HTTP errors (404/405) and request validation (422, `details` = field errors) |
 
 Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_type` (415),
 `payload_too_large` (413), `llm_error` / `llm_not_configured` (502), `llm_invalid_output`
 (502, `LLMOutputError`: a structured reply failed its schema; carries `errors`),
+`run_not_found` (404, trace route),
 `internal_error` (500), `conflict` (409, base) with `text_not_ready` / `text_unavailable` /
 `text_not_extracted` / `extraction_not_ready` / `extraction_unavailable` (409),
 `unreadable_document` / `no_text_found` (422, `TextExtractionError`; raised by
@@ -216,7 +237,7 @@ when the currency is missing or invalid).
 | Engine | PostgreSQL 18 + pgvector (`pgvector/pgvector:pg18-trixie`) |
 | Container / volume | `appfuxion-db` / `appfuxion_pgdata` (mounted at `/var/lib/postgresql`) |
 | Driver | SQLAlchemy 2.0 + psycopg 3 (`postgresql+psycopg://`) |
-| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents`; `0003` creates `document_texts`; `0004` creates `extractions`; `0005` creates `agent_runs` |
+| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents`; `0003` creates `document_texts`; `0004` creates `extractions`; `0005` creates `agent_runs`; `0006` creates `llm_calls` |
 | ID rule | Every table's primary key is a native `UUID` (v4, `uuid.uuid4()`), exposed as a plain dashed UUID |
 | Test database | `appfuxion_test` on the same server (created and migrated by `conftest.py`) |
 
@@ -302,6 +323,35 @@ indexes `ix_agent_runs_document_id_started_at (document_id, started_at DESC)` an
 unique `uq_agent_runs_document_running (document_id) WHERE status = 'running'` (one running
 run per document).
 
+### Table `llm_calls`
+
+The token ledger (0007): one row per LLM call of any client, written by
+`observability.service.record_llm_call` in its own session. Counts, timings and labels
+only — never prompts, replies or document text.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `UUID` PK | v4 |
+| `document_id` | `UUID` NULL | FK `documents.id`, `ON DELETE CASCADE`; from the `document_id` context var |
+| `run_id` | `UUID` NULL | FK `agent_runs.id`, `ON DELETE CASCADE`; from the `run_id` context var |
+| `step_index` | `INTEGER` NULL | The tool step the call was made in; null for agent-loop turns |
+| `agent` | `VARCHAR(30)` NULL | `document` (B4 adds more) |
+| `purpose` | `VARCHAR(40)` | `vision_transcription`, `structured_extraction`, `agent_loop`, `summary`, `embedding`, `unknown` |
+| `kind` | `VARCHAR(20)` | `CHECK` `chat` / `embedding` |
+| `model` | `VARCHAR(100)` | Model the API reported (requested model on failure) |
+| `prompt_version` | `VARCHAR(50)` NULL | The caller's `PROMPT_VERSION` |
+| `prompt_tokens`, `completion_tokens` | `INTEGER` | `CHECK >= 0`, default 0; 0 on a failed call (no usage returned) |
+| `cost_usd` | `NUMERIC(12,6)` NULL | `CHECK >= 0`; estimated at write time from `observability/pricing.py`; null for an unpriced model |
+| `latency_ms` | `INTEGER` | `CHECK >= 0`; includes the SDK's own retries |
+| `status`, `error_code` | `VARCHAR(10)` / `VARCHAR(50)` NULL | `CHECK` `ok` / `error`; the exception's code (`llm_error`, `llm_invalid_output`, `internal_error`) |
+| `started_at` | `TIMESTAMPTZ` | When the call started (app clock, UTC) |
+
+Constraints: `pk_llm_calls`, `fk_llm_calls_document_id_documents`,
+`fk_llm_calls_run_id_agent_runs`, `ck_llm_calls_kind_valid`, `ck_llm_calls_status_valid`, and
+non-negative checks on tokens, cost and latency; indexes
+`ix_llm_calls_document_id_started_at`, `ix_llm_calls_run_id`, `ix_llm_calls_started_at`. No
+retention job: rows go with their document.
+
 ## Configuration
 
 Read by `app/core/config.py` from environment variables, then `../.env` / `.env`.
@@ -343,6 +393,7 @@ ROUTERS: list[APIRouter] = [
     text_extraction_router,
     structured_extraction_router,
     agent_router,
+    observability_router,
     client_config_router,
 ]
 ```
@@ -396,6 +447,21 @@ helpers. The 0005 agent tools call them.
 LLM seam: `LLMClient.complete(..., response_format=X)` returns `LLMResponse.parsed`; a reply
 that fails `X`'s validation raises `LLMOutputError` (both `OpenAILLMClient` and `FakeLLM`),
 and a refusal is returned as `LLMResponse.refusal` with `parsed=None`.
+
+Observability (0007): every `complete` / `embed` call of `OpenAILLMClient` and `FakeLLM` runs
+inside `llm._observe`, which snapshots the trace labels, times the call, logs one `llm.call`
+line (INFO ok / ERROR failed) and hands an `LLMCallRecord` to the recorder registered with
+`register_llm_recorder` — `app/main.py` registers `observability.service.record_llm_call`, so
+`core` never imports a module. Recorder errors are logged (`llm.call not recorded`) and
+dropped. Callers only label their calls with `app.core.logging.bind_trace(...)` (a context
+manager that also works as a decorator): the agent service binds `run_id` + `agent`, the
+runner binds `purpose=agent_loop` around each turn and `step_index` around each tool
+handler, and `_transcribe_pages` (vision), `_extract_with_retry` (structured extraction) and
+the summary tool's `_complete` are decorated with their `purpose` and `prompt_version`. An
+unlabelled chat call is recorded as `unknown` with a warning. Tests register no recorder by
+default; ledger tests opt in with `llm_recorder`. The trace and metrics read other modules
+through `documents.service` (`get_document`, `count_by_status`) and `agent.service`
+(`list_runs`, `run_stats`, `completed_run_ids`).
 
 ## Dependencies added in 0002
 

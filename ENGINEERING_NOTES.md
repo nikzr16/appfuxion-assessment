@@ -273,6 +273,58 @@ feature number (`0000`, `0001`, ...).
   uploads and status changes; focus moves to the page heading after navigation; the confirm
   dialog is the native `<dialog>` (focus trap, Escape).
 
+### 0007 - Observability (token ledger, traces, metrics)
+
+- **Every LLM call is measured in one place.** `app/core/llm.py` wraps each `complete` /
+  `embed` call of `OpenAILLMClient` *and* `FakeLLM` in `_observe`: it snapshots the trace
+  labels, times the call, logs one `llm.call` line and hands an `LLMCallRecord` to a recorder
+  hook. The `observability` module registers that hook in `app/main.py` (the same pattern as
+  the 0001 pipeline hook), so `core` never imports a feature module and a new LLM call in
+  B2–B4 cannot be missed. Tests run the same path because `FakeLLM` is measured too.
+- **Callers only say what a call is for.** Labels are context variables next to 0000's
+  `document_id`: `run_id`, `agent`, `purpose`, `prompt_version`, `step_index`, bound with
+  `bind_trace(...)` (a context manager that also decorates a function). The agent service
+  binds the run, the runner binds `agent_loop` around each turn and the step index around each
+  tool, and vision, structured extraction and the summary decorate their one LLM helper. So
+  the vision call made inside `extract_text` is linked to that step without passing IDs
+  through any signature. Context variables are per thread, so parallel runs never mix labels.
+- **A ledger of numbers, not text.** `llm_calls` holds one row per call: labels, model,
+  prompt / completion tokens, estimated cost, latency, `ok` / `error` and the error code —
+  never prompts, replies or invoice text, so it can be kept and shown freely. Failed calls
+  are rows too (`llm_error`, `llm_invalid_output`), which makes rejected structured replies
+  and API failures visible for the first time.
+- **Cost is an estimate from a dated table.** `observability/pricing.py` lists USD per 1M
+  input / output tokens for the models we use (checked on OpenAI's model pages on
+  2026-10-27) and resolves dated names such as `gpt-4.1-mini-2025-04-14` by longest prefix.
+  The cost is computed when the row is written, so old rows keep the price that applied;
+  unknown models get `null` and the totals say the cost is incomplete.
+- **Recording can never break a run.** Each row is written in its own short session and
+  transaction (never the run's, never across an LLM call); any error is logged as
+  `llm.call not recorded` and dropped. A failed run's rollback does not remove its ledger
+  rows — exactly the runs you want to inspect.
+- **The trace reuses what exists.** `GET /documents/{id}/trace` joins the run's tool steps
+  (already timed in `agent_runs.steps` since 0005) with its ledger rows into one flat,
+  start-ordered list of spans with offsets from the run start; LLM spans carry the step they
+  ran in. No separate span table. Document timing adds queue time (upload → run start, upload
+  runs only) and processing time (run duration). Runs from before 0007 still show their
+  steps and run-level tokens, flagged `llm_calls_recorded: false`; nothing is back-filled.
+- **Metrics are computed live.** `GET /metrics/summary[?days=N]` runs a handful of aggregate
+  queries: documents by status and success rate (`documents.service`), run counts and
+  average / p50 / p95 duration with `percentile_cont` (`agent.service`), and ledger totals by
+  model and purpose. Per-document averages use completed runs that have ledger rows, so
+  pre-0007 documents do not drag them down. No cache: the numbers are cheap at this scale.
+- **Logs and database tell the same story.** Every JSON log line written during a run
+  carries `document_id`, `run_id`, `agent` and (inside a call) `purpose` / `step_index`;
+  each call logs one `llm.call` line with the ledger's fields (INFO ok, ERROR failed).
+- **UI.** The detail page gets a Trace card: a totals strip (processing and queue time, LLM
+  calls, tokens, est. cost), tokens by purpose, and a waterfall timeline — tool steps with
+  their LLM calls nested, bars on one time axis, a list with offsets on phones — plus a run
+  picker for earlier runs. Each agent lane shows its tokens and cost, and the agent's own
+  planning turns are shown once above the lanes (they belong to no lane until B4). A new
+  `/metrics` page has KPI tiles, by-model / by-purpose tables and a 7 / 30 days / all-time
+  switch kept in the URL. The two bar colours were checked with a palette validator for
+  colour-blind and normal-vision separation in both themes.
+
 ## 2. Prompt design
 
 _TODO per feature: prompt structure, versioning (`PROMPT_VERSION`), output schemas, and how
@@ -338,6 +390,11 @@ hallucination is prevented (fields absent from the document are `null`)._
   function tools. The agent never sees raw document text; the summary model sees only the
   extracted JSON, so a value can only appear in the summary if extraction produced it.
 
+**0007 - Observability**
+- No prompt changed. Every ledger row now stores the caller's prompt version
+  (`text_extraction.v1`, `structured_extraction.v1`, `agent.document.v1`, `agent.summary.v1`),
+  so tokens, latency and failures can be compared per prompt version when one is bumped.
+
 ## 3. Limitations
 
 _TODO per feature: known gaps (for example the static, dated currency-rate table)._
@@ -382,7 +439,8 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
   returns usage. In strict mode only the code-side checks (currency shape, impossible date,
   non-finite number) can reject a reply, so this is rare, but `prompt_tokens` /
   `completion_tokens` under-report the retry path. The rejected reply itself is not kept
-  either (no raw output is stored; B1 adds a per-call ledger).
+  either (no raw output is stored; B1 adds a per-call ledger). Since 0007 the rejected call is
+  a ledger row (`llm_invalid_output`, with its latency); its tokens are still unknown.
 - Trailing zeros are not preserved: a JSON number `5.00` becomes `Decimal("5")`. The value is
   exact; only its printed formatting is lost.
 - Text over 60,000 characters is cut to its first 45,000 and last 15,000 characters; line
@@ -415,7 +473,8 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
   user must reprocess. There is no automatic retry of a failed run.
 - Token counts on a run cover the agent loop and the summary call only; vision and structured
   extraction tokens live on their own rows, and the tokens of a call that raised are not
-  counted. A per-call ledger is B1.
+  counted. A per-call ledger is B1 (resolved in 0007: every call, including vision,
+  extraction and failed calls, is an `llm_calls` row; the run-level totals are unchanged).
 - If the backend stops mid-run, the document stays `processing` and its run `running`;
   reprocess is refused (409) for that document until something marks it finished. The stale
   run row is closed automatically the next time a run starts.
@@ -434,6 +493,24 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
 - The documents list has no search or sort, and documents cannot be deleted or edited from
   the UI (no API for either). The UI has no login.
 - Light and dark were checked by eye for contrast, not with an automated accessibility audit.
+
+**0007 - Observability**
+- Cost is an estimate from a static price table dated 2026-10-27 (standard tier); cached-input
+  discounts, the Batch API and other tiers are ignored, and refreshing it is a code change.
+  OpenAI's model page marks the default `gpt-4.1-mini` as deprecated (still priced).
+- A failed call is recorded with 0 tokens because the API returns no usage, and the OpenAI
+  SDK's own retries (`OPENAI_MAX_RETRIES`) happen inside one call, so they show up only as
+  a longer latency.
+- Run start / finish times come from Postgres (`now()`, the transaction start) while steps and
+  calls use the app clock, so offsets can be a few ms off; they are clamped at 0.
+- Each call adds one small insert in its own session on the hot path (a few ms next to
+  seconds of LLM time); nothing is batched.
+- Metrics are aggregated live over the whole table: fine for thousands of rows, not millions.
+  Token and cost averages cover only documents processed since 0007 (`ledger_since`).
+- Ledger rows are kept as long as their document; there is no retention or roll-up job.
+- The trace view polls every 10 s like the rest of the page, so a running trace lags. Tokens
+  per lane are mapped from tool to role until B4 gives each lane its own agent.
+- `embed` calls are recorded, but nothing calls them until B3.
 
 ## 4. Production improvements
 
@@ -504,3 +581,18 @@ retries and rate-limit handling, database backups)._
 - Add search, sorting and date filters to the list, server-side counts per status for the
   tabs, and authentication with per-user documents.
 - Ship error monitoring (e.g. Sentry) and web-vitals reporting for the UI.
+
+**0007 - Observability**
+- Export traces with OpenTelemetry (GenAI semantic conventions) to a tracing backend (Tempo,
+  Jaeger, Langfuse) and metrics to Prometheus; dashboards and alerts on error rate, p95
+  processing time, cost per document and daily spend.
+- Write ledger rows off the request path (queue or batched writer), roll them up into daily
+  aggregates, and partition `llm_calls` by month with a retention policy.
+- Load prices from configuration or a maintained source, and record cached-input and
+  reasoning tokens (`usage.*_tokens_details`) so the estimate matches the bill; set budgets
+  and alerts per customer.
+- Retry in our own seam instead of the SDK so each attempt is its own span with its own
+  latency and error.
+- Optionally keep redacted, sampled prompts and replies for debugging, behind access control
+  and a short retention.
+- Take run timestamps from the app clock too, so every span uses one clock.

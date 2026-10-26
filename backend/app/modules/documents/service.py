@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import uuid
+from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -22,6 +23,7 @@ from app.modules.documents import crud
 from app.modules.documents.model import Document
 from app.modules.documents.pipeline import DocumentPipeline
 from app.modules.documents.schema import (
+    DocumentCounts,
     DocumentList,
     DocumentRead,
     DocumentSource,
@@ -198,6 +200,16 @@ def list_documents(
     rows, total = crud.list_(db, limit=limit, offset=offset, status=status)
     return DocumentList(
         items=[_to_read(row) for row in rows], total=total, limit=limit, offset=offset
+    )
+
+
+def count_by_status(db: Session, *, since: datetime | None = None) -> DocumentCounts:
+    """Documents per status for the metrics summary (feature 0007)."""
+    counts = crud.count_by_status(db, since=since)
+    return DocumentCounts(
+        processing=counts.get(DocumentStatus.PROCESSING.value, 0),
+        completed=counts.get(DocumentStatus.COMPLETED.value, 0),
+        failed=counts.get(DocumentStatus.FAILED.value, 0),
     )
 
 

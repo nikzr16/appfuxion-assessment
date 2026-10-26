@@ -1,12 +1,14 @@
-import { Bot, ChevronDown } from "lucide-react";
+import { Bot, BrainCircuit, ChevronDown } from "lucide-react";
+import { useMemo } from "react";
 
-import type { AgentRunRead } from "../../api/types.ts";
+import type { AgentRunRead, DocumentTrace } from "../../api/types.ts";
 import { Badge } from "../../components/ui/Badge.tsx";
 import { Card, CardBody, CardHeader } from "../../components/ui/Card.tsx";
 import { ErrorAlert } from "../../components/ui/Alert.tsx";
 import { Skeleton } from "../../components/ui/Skeleton.tsx";
 import { modeLabel, runDurationMs } from "../../lib/agents.ts";
-import { formatDuration, formatRelative, formatTimestamp } from "../../lib/format.ts";
+import { formatCost, formatDuration, formatRelative, formatTimestamp, formatTokens } from "../../lib/format.ts";
+import { laneUsage, planningUsage } from "../../lib/trace.ts";
 import { AgentLanes } from "./AgentLanes.tsx";
 
 const RUN_STATUS = {
@@ -41,12 +43,18 @@ interface AgentActivityProps {
   error: unknown;
   onRetry: () => void;
   live: boolean;
+  /** The latest run's trace; adds tokens per lane and the planning turns (PRD 0007 D11). */
+  trace?: DocumentTrace;
 }
 
 /** The multi-agent view of the latest run, plus earlier runs collapsed (PRD D10, D19). */
-export function AgentActivity({ runs, isPending, error, onRetry, live }: AgentActivityProps) {
+export function AgentActivity({ runs, isPending, error, onRetry, live, trace }: AgentActivityProps) {
   const latest = runs?.[0] ?? null;
   const earlier = runs?.slice(1) ?? [];
+  const usage = useMemo(() => {
+    if (!trace?.run || !latest || trace.run.run_id !== latest.id || !trace.llm_calls_recorded) return null;
+    return { lanes: laneUsage(trace), planning: planningUsage(trace) };
+  }, [trace, latest]);
 
   return (
     <Card aria-labelledby="agent-activity-title">
@@ -68,7 +76,18 @@ export function AgentActivity({ runs, isPending, error, onRetry, live }: AgentAc
           <ErrorAlert error={error} onRetry={onRetry} />
         ) : (
           <>
-            <AgentLanes run={latest} />
+            {usage && usage.planning.calls > 0 && (
+              <p className="mb-3 flex flex-wrap items-center gap-x-1.5 text-xs text-fg-muted">
+                <BrainCircuit className="size-3.5 text-fg-subtle" aria-hidden />
+                <span className="font-medium text-fg">Planning</span>
+                <span className="tabular-nums">
+                  {usage.planning.calls} {usage.planning.calls === 1 ? "turn" : "turns"} ·{" "}
+                  {formatTokens(usage.planning.tokens)} tokens · {formatCost(usage.planning.cost)}
+                </span>
+                <span className="text-fg-subtle">— the agent choosing each next tool</span>
+              </p>
+            )}
+            <AgentLanes run={latest} usage={usage?.lanes} />
             {live && (
               <p className="mt-3 text-xs text-fg-subtle">Steps appear here as the agents work.</p>
             )}

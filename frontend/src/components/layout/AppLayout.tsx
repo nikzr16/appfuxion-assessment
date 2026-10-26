@@ -1,4 +1,4 @@
-import { FileStack, Upload } from "lucide-react";
+import { BarChart3, FileStack, Upload } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router";
 
@@ -10,6 +10,7 @@ import { ThemeToggle } from "./ThemeToggle.tsx";
 const NAV = [
   { to: "/", label: "Upload", Icon: Upload, end: true },
   { to: "/documents", label: "Documents", Icon: FileStack, end: false },
+  { to: "/metrics", label: "Metrics", Icon: BarChart3, end: false },
 ];
 
 function Logo() {

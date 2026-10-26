@@ -2,7 +2,10 @@ import type {
   AgentResult,
   AgentRunRead,
   DocumentRead,
+  DocumentTrace,
   InvoiceData,
+  LLMSpan,
+  ToolSpan,
   ToolStep,
   ValidationIssue,
 } from "../api/types.ts";
@@ -137,4 +140,97 @@ export const CONFIG = {
 
 export function pdfFile(name = "invoice.pdf", size = 2048): File {
   return new File([new Uint8Array(size)], name, { type: "application/pdf" });
+}
+
+/** A completed run's trace (`GET /trace`) matching `makeRun()` and `ALL_STEPS`. */
+export function makeTrace(overrides: Partial<DocumentTrace> = {}): DocumentTrace {
+  const at = (ms: number) => new Date(Date.parse("2026-10-27T01:02:00+08:00") + ms).toISOString();
+  const llm = (
+    id: string,
+    purpose: string,
+    stepIndex: number | null,
+    offset: number,
+    duration: number,
+    extra: Partial<LLMSpan> = {},
+  ): LLMSpan => ({
+    kind: "llm",
+    id,
+    step_index: stepIndex,
+    purpose,
+    agent: "document",
+    model: "gpt-4.1-mini-2025-04-14",
+    prompt_version: `${purpose}.v1`,
+    prompt_tokens: 300,
+    completion_tokens: 75,
+    total_tokens: 375,
+    cost_usd: "0.000240",
+    status: "ok",
+    error_code: null,
+    started_at: at(offset),
+    offset_ms: offset,
+    duration_ms: duration,
+    ...extra,
+  });
+  const tool = (step: ToolStep, offset: number): ToolSpan => ({
+    kind: "tool",
+    step_index: step.index,
+    turn: step.turn,
+    tool: step.tool,
+    status: step.status,
+    error_code: step.error?.code ?? null,
+    started_at: at(offset),
+    offset_ms: offset,
+    duration_ms: step.duration_ms,
+  });
+  const [text, structured, validate, summary] = ALL_STEPS as [ToolStep, ToolStep, ToolStep, ToolStep];
+  return {
+    document_id: DOC_ID,
+    uploaded_at: "2026-10-27T01:01:59+08:00",
+    run: {
+      run_id: "run-1",
+      mode: "single",
+      trigger: "upload",
+      status: "completed",
+      error_code: null,
+      error: null,
+      started_at: "2026-10-27T01:02:00+08:00",
+      finished_at: "2026-10-27T01:02:12+08:00",
+      queue_ms: 850,
+      processing_ms: 12_000,
+      run_prompt_tokens: 1200,
+      run_completion_tokens: 300,
+    },
+    llm_calls_recorded: true,
+    totals: {
+      llm_calls: 6,
+      failed_calls: 0,
+      prompt_tokens: 1800,
+      completion_tokens: 450,
+      total_tokens: 2250,
+      cost_usd: "0.001440",
+      cost_complete: true,
+    },
+    by_purpose: [
+      { key: "agent_loop", llm_calls: 4, failed_calls: 0, prompt_tokens: 1200, completion_tokens: 300, total_tokens: 1500, cost_usd: "0.000960", cost_complete: true, avg_latency_ms: 900 },
+      { key: "structured_extraction", llm_calls: 1, failed_calls: 0, prompt_tokens: 300, completion_tokens: 75, total_tokens: 375, cost_usd: "0.000240", cost_complete: true, avg_latency_ms: 2700 },
+      { key: "summary", llm_calls: 1, failed_calls: 0, prompt_tokens: 300, completion_tokens: 75, total_tokens: 375, cost_usd: "0.000240", cost_complete: true, avg_latency_ms: 1600 },
+    ],
+    by_agent: [
+      { key: "document", llm_calls: 6, failed_calls: 0, prompt_tokens: 1800, completion_tokens: 450, total_tokens: 2250, cost_usd: "0.001440", cost_complete: true, avg_latency_ms: 1150 },
+    ],
+    spans: [
+      llm("c1", "agent_loop", null, 10, 900),
+      tool(text, 920),
+      llm("c2", "agent_loop", null, 970, 800),
+      tool(structured, 1780),
+      llm("c3", "structured_extraction", 1, 1790, 2700),
+      llm("c4", "agent_loop", null, 4600, 950),
+      tool(validate, 5560),
+      llm("c5", "agent_loop", null, 5570, 950),
+      tool(summary, 6530),
+      llm("c6", "summary", 3, 6540, 1600),
+    ],
+    prices_as_of: "2026-10-27",
+    ...overrides,
+  };
 }

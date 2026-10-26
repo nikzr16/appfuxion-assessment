@@ -9,6 +9,7 @@ import {
   useRefreshOnFinish,
   useResult,
   useRuns,
+  useTrace,
 } from "../../api/queries.ts";
 import type { DocumentRead } from "../../api/types.ts";
 import { FileIcon } from "../../components/FileIcon.tsx";
@@ -33,6 +34,7 @@ import { RawTextSection } from "./RawTextSection.tsx";
 import { ReprocessButton } from "./ReprocessButton.tsx";
 import { StructuredData } from "./StructuredData.tsx";
 import { SummaryCard } from "./SummaryCard.tsx";
+import { TraceSection } from "./TraceSection.tsx";
 import { splitError } from "./labels.ts";
 
 function BackLink() {
@@ -221,6 +223,9 @@ export default function DocumentDetailPage() {
   const status = document.data?.status;
   const live = status === "processing";
   const runs = useRuns(id, { live });
+  const [traceRunId, setTraceRunId] = useState<string | undefined>(undefined);
+  const trace = useTrace(id, traceRunId, { live: live && traceRunId === undefined });
+  const latestTrace = useTrace(id, undefined, { live });
   const announce = useAnnounce();
   const [alreadyProcessing, setAlreadyProcessing] = useState(false);
   useRefreshOnFinish(id, status);
@@ -293,6 +298,16 @@ export default function DocumentDetailPage() {
           error={runs.error}
           onRetry={() => void runs.refetch()}
           live={live}
+          trace={latestTrace.data}
+        />
+        <TraceSection
+          trace={trace.data}
+          isPending={trace.isPending}
+          error={trace.error}
+          onRetry={() => void trace.refetch()}
+          runs={runs.data}
+          runId={traceRunId}
+          onRunChange={setTraceRunId}
         />
         {doc.status !== "processing" && <RawTextSection documentId={doc.document_id} />}
       </div>

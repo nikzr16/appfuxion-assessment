@@ -18,7 +18,7 @@ def test_pgvector_type_is_usable(db_session: Session) -> None:
 
 def test_alembic_version_is_at_head(db_session: Session) -> None:
     version = db_session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert version == "0005"
+    assert version == "0006"
 
 
 def test_documents_table_has_a_native_uuid_primary_key(db_session: Session) -> None:
@@ -407,4 +407,136 @@ def test_deleting_a_document_cascades_to_its_agent_runs(db_session: Session) -> 
         text("SELECT count(*) FROM agent_runs WHERE document_id = :id"), {"id": document_id}
     ).scalar()
     assert remaining == 0
+    db_session.rollback()
+
+
+# -- llm_calls (0006) -----------------------------------------------------------------
+
+
+def test_llm_calls_table_has_native_uuid_keys_and_its_columns(db_session: Session) -> None:
+    columns = dict(
+        db_session.execute(
+            text(
+                "SELECT column_name, udt_name FROM information_schema.columns "
+                "WHERE table_name = 'llm_calls'"
+            )
+        ).all()
+    )
+    assert columns["id"] == columns["document_id"] == columns["run_id"] == "uuid"
+    assert columns["cost_usd"] == "numeric"
+    assert columns["started_at"] == "timestamptz"
+    assert set(columns) == {
+        "id",
+        "document_id",
+        "run_id",
+        "step_index",
+        "agent",
+        "purpose",
+        "kind",
+        "model",
+        "prompt_version",
+        "prompt_tokens",
+        "completion_tokens",
+        "cost_usd",
+        "latency_ms",
+        "status",
+        "error_code",
+        "started_at",
+    }
+
+
+def test_llm_calls_table_has_its_constraints_and_indexes(db_session: Session) -> None:
+    constraints = dict(
+        db_session.execute(
+            text(
+                "SELECT conname, contype FROM pg_constraint "
+                "WHERE conrelid = 'llm_calls'::regclass AND contype <> 'n'"
+            )
+        ).all()
+    )
+    assert constraints == {
+        "pk_llm_calls": "p",
+        "fk_llm_calls_document_id_documents": "f",
+        "fk_llm_calls_run_id_agent_runs": "f",
+        "ck_llm_calls_kind_valid": "c",
+        "ck_llm_calls_status_valid": "c",
+        "ck_llm_calls_prompt_tokens_non_negative": "c",
+        "ck_llm_calls_completion_tokens_non_negative": "c",
+        "ck_llm_calls_cost_usd_non_negative": "c",
+        "ck_llm_calls_latency_ms_non_negative": "c",
+    }
+    indexes = set(
+        db_session.execute(
+            text("SELECT indexname FROM pg_indexes WHERE tablename = 'llm_calls'")
+        ).scalars()
+    )
+    assert indexes == {
+        "pk_llm_calls",
+        "ix_llm_calls_document_id_started_at",
+        "ix_llm_calls_run_id",
+        "ix_llm_calls_started_at",
+    }
+
+
+def _insert_call(
+    db_session: Session,
+    *,
+    document_id: str | None = None,
+    run_id: str | None = None,
+    kind: str = "chat",
+    status: str = "ok",
+    prompt_tokens: int = 1,
+    cost_usd: str | None = "0.000001",
+    latency_ms: int = 5,
+) -> None:
+    db_session.execute(
+        text(
+            "INSERT INTO llm_calls (id, document_id, run_id, purpose, kind, model, "
+            "prompt_tokens, cost_usd, latency_ms, status, started_at) VALUES "
+            "(gen_random_uuid(), :document_id, :run_id, 'summary', :kind, 'm', "
+            ":prompt_tokens, CAST(:cost_usd AS numeric), :latency_ms, :status, now())"
+        ),
+        {
+            "document_id": document_id,
+            "run_id": run_id,
+            "kind": kind,
+            "status": status,
+            "prompt_tokens": prompt_tokens,
+            "cost_usd": cost_usd,
+            "latency_ms": latency_ms,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"kind": "image"},
+        {"status": "done"},
+        {"prompt_tokens": -1},
+        {"cost_usd": "-0.1"},
+        {"latency_ms": -1},
+    ],
+)
+def test_llm_calls_check_constraints_reject_bad_values(
+    db_session: Session, overrides: dict[str, object]
+) -> None:
+    with pytest.raises(IntegrityError):
+        _insert_call(db_session, **overrides)  # type: ignore[arg-type]
+    db_session.rollback()
+
+
+def test_deleting_a_document_cascades_to_its_runs_and_llm_calls(db_session: Session) -> None:
+    document_id = _insert_document(db_session)
+    _insert_run(db_session, document_id, status="completed")
+    run_id = str(
+        db_session.execute(
+            text("SELECT id FROM agent_runs WHERE document_id = :id"), {"id": document_id}
+        ).scalar()
+    )
+    _insert_call(db_session, document_id=document_id, run_id=run_id)
+    _insert_call(db_session)  # a call outside any document is allowed
+    db_session.execute(text("DELETE FROM documents WHERE id = :id"), {"id": document_id})
+    remaining = db_session.execute(text("SELECT count(*) FROM llm_calls")).scalar()
+    assert remaining == 1
     db_session.rollback()

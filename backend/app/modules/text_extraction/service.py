@@ -15,8 +15,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.errors import AppError, ConflictError, LLMError, NotFoundError
-from app.core.llm import LLMClient
-from app.core.logging import bind_document_id
+from app.core.llm import LLMClient, Purpose
+from app.core.logging import bind_document_id, bind_trace
 from app.core.storage import Storage
 from app.modules.documents import service as documents_service
 from app.modules.documents.schema import DocumentStatus
@@ -141,6 +141,7 @@ def _read_text_layer(data: bytes) -> list[str]:
 # -- Vision ---------------------------------------------------------------------------
 
 
+@bind_trace(purpose=Purpose.VISION_TRANSCRIPTION, prompt_version=prompts.PROMPT_VERSION)
 def _transcribe_pages(
     llm: LLMClient, images: Sequence[bytes], page_count: int
 ) -> tuple[list[str], str | None]:

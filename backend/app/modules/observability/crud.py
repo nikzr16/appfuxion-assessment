@@ -1,0 +1,86 @@
+import uuid
+from collections.abc import Sequence
+from datetime import datetime
+from decimal import Decimal
+from typing import Any, Literal
+
+from sqlalchemy import Row, Select, func, select
+from sqlalchemy.orm import Session
+
+from app.modules.observability.model import LlmCall
+
+
+def insert(db: Session, **values: Any) -> LlmCall:
+    """Add one ledger row and flush; the caller commits."""
+    row = LlmCall(**values)
+    db.add(row)
+    db.flush()
+    return row
+
+
+def list_for_run(db: Session, run_id: uuid.UUID) -> Sequence[LlmCall]:
+    """The run's calls in the order they started."""
+    return (
+        db.execute(
+            select(LlmCall).where(LlmCall.run_id == run_id).order_by(LlmCall.started_at, LlmCall.id)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _usage_columns() -> tuple[Any, ...]:
+    return (
+        func.count().label("calls"),
+        func.count().filter(LlmCall.status == "error").label("failed"),
+        func.coalesce(func.sum(LlmCall.prompt_tokens), 0).label("prompt_tokens"),
+        func.coalesce(func.sum(LlmCall.completion_tokens), 0).label("completion_tokens"),
+        func.sum(LlmCall.cost_usd).label("cost_usd"),
+        func.count().filter(LlmCall.cost_usd.is_(None)).label("unpriced"),
+        func.coalesce(func.avg(LlmCall.latency_ms), 0).label("avg_latency_ms"),
+    )
+
+
+def _since(query: Select[Any], since: datetime | None) -> Select[Any]:
+    return query if since is None else query.where(LlmCall.started_at >= since)
+
+
+def totals(db: Session, *, since: datetime | None = None) -> Row[Any]:
+    """One row: calls, failed, prompt_tokens, completion_tokens, cost_usd, unpriced,
+    avg_latency_ms."""
+    return db.execute(_since(select(*_usage_columns()), since)).one()
+
+
+def group_totals(
+    db: Session, *, by: Literal["model", "purpose"], since: datetime | None = None
+) -> Sequence[Row[Any]]:
+    """``totals`` per model or purpose (column ``key``), most tokens first."""
+    column = LlmCall.model if by == "model" else LlmCall.purpose
+    tokens = func.sum(LlmCall.prompt_tokens + LlmCall.completion_tokens)
+    query = (
+        select(column.label("key"), *_usage_columns())
+        .group_by(column)
+        .order_by(tokens.desc(), column)
+    )
+    return db.execute(_since(query, since)).all()
+
+
+def per_run_totals(db: Session, run_ids: Sequence[uuid.UUID]) -> Sequence[Row[Any]]:
+    """Tokens and known cost per run, for the runs that have ledger rows."""
+    if not run_ids:
+        return []
+    query = (
+        select(
+            LlmCall.run_id,
+            func.sum(LlmCall.prompt_tokens + LlmCall.completion_tokens).label("tokens"),
+            func.coalesce(func.sum(LlmCall.cost_usd), Decimal(0)).label("cost_usd"),
+            func.count().filter(LlmCall.cost_usd.is_(None)).label("unpriced"),
+        )
+        .where(LlmCall.run_id.in_(run_ids))
+        .group_by(LlmCall.run_id)
+    )
+    return db.execute(query).all()
+
+
+def earliest_started_at(db: Session) -> datetime | None:
+    return db.execute(select(func.min(LlmCall.started_at))).scalar_one()

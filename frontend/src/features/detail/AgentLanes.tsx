@@ -25,7 +25,8 @@ import {
   type LaneStatus,
 } from "../../lib/agents.ts";
 import { cx } from "../../lib/cx.ts";
-import { formatDuration } from "../../lib/format.ts";
+import { formatCost, formatDuration, formatTokens } from "../../lib/format.ts";
+import type { Usage } from "../../lib/trace.ts";
 
 const ROLE_ICON: Record<AgentRole, LucideIcon> = {
   extraction: ScanText,
@@ -42,7 +43,7 @@ const LANE_STATUS: Record<LaneStatus, { tone: Tone; label: string }> = {
   skipped: { tone: "neutral", label: "Not reached" },
 };
 
-function LaneCard({ lane }: { lane: Lane }) {
+function LaneCard({ lane, usage }: { lane: Lane; usage: Usage | undefined }) {
   const Icon = ROLE_ICON[lane.role];
   const info = ROLE_INFO[lane.role];
   const status = LANE_STATUS[lane.status];
@@ -113,15 +114,34 @@ function LaneCard({ lane }: { lane: Lane }) {
         </p>
       )}
 
-      {lane.totalMs > 0 && (
-        <p className="mt-auto pt-3 text-xs text-fg-subtle tabular-nums">Total {formatDuration(lane.totalMs)}</p>
+      {(lane.totalMs > 0 || usage) && (
+        <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-3">
+          {lane.totalMs > 0 && (
+            <p className="text-xs text-fg-subtle tabular-nums">Total {formatDuration(lane.totalMs)}</p>
+          )}
+          {usage && (
+            <Badge tone="neutral" className="tabular-nums">
+              <span className="sr-only">LLM usage: </span>
+              {formatTokens(usage.tokens)} tokens · {formatCost(usage.cost)}
+            </Badge>
+          )}
+        </div>
       )}
     </section>
   );
 }
 
-/** Extraction → Validation → Reporting lanes for one run (PRD D19); null = run not started yet. */
-export function AgentLanes({ run }: { run: AgentRunRead | null }) {
+/**
+ * Extraction → Validation → Reporting lanes for one run (PRD D19); null = run not started yet.
+ * `usage` adds each lane's LLM tokens and estimated cost from the trace (PRD 0007 D11).
+ */
+export function AgentLanes({
+  run,
+  usage,
+}: {
+  run: AgentRunRead | null;
+  usage?: Partial<Record<AgentRole, Usage>>;
+}) {
   const lanes: Lane[] = run
     ? buildLanes(run)
     : ROLE_ORDER.map((role, index) => ({
@@ -141,7 +161,7 @@ export function AgentLanes({ run }: { run: AgentRunRead | null }) {
               <ArrowRight className="hidden size-4 md:block" />
             </div>
           )}
-          <LaneCard lane={lane} />
+          <LaneCard lane={lane} usage={usage?.[lane.role]} />
         </Fragment>
       ))}
     </div>

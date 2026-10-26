@@ -1,16 +1,21 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  costMicros,
   fileKind,
   formatAmount,
   formatBytes,
+  formatCost,
   formatDate,
   formatDecimal,
   formatDuration,
   formatMoney,
+  formatPercent,
   formatQuantity,
   formatRelative,
   formatTimestamp,
+  formatTokens,
+  microsToCost,
   minorUnits,
 } from "./format.ts";
 
@@ -96,5 +101,41 @@ describe("sizes and durations", () => {
     expect(fileKind("application/pdf")).toBe("PDF");
     expect(fileKind("image/jpeg")).toBe("JPG");
     expect(fileKind("image/webp")).toBe("WEBP");
+  });
+});
+
+describe("formatTokens", () => {
+  it("groups small counts and shortens large ones", () => {
+    expect(formatTokens(842)).toBe("842");
+    expect(formatTokens(9120)).toBe("9,120");
+    expect(formatTokens(12_340)).toBe("12.3k");
+    expect(formatTokens(40_000)).toBe("40k");
+    expect(formatTokens(1_250_000)).toBe("1.3M");
+  });
+});
+
+describe("costs", () => {
+  it("converts decimal strings to micro-dollars exactly and back", () => {
+    expect(costMicros("0.001440")).toBe(1440);
+    expect(costMicros("1.5")).toBe(1_500_000);
+    expect(microsToCost(1440 + 240)).toBe("0.001680");
+    expect(microsToCost(2_000_001)).toBe("2.000001");
+  });
+
+  it("formats estimates with sensible precision", () => {
+    expect(formatCost(null)).toBe("—");
+    expect(formatCost("0.000000")).toBe("$0.00");
+    expect(formatCost("0.000040")).toBe("<$0.0001");
+    expect(formatCost("0.001440")).toBe("$0.0014");
+    expect(formatCost("0.042000")).toBe("$0.042");
+    expect(formatCost("1.240000")).toBe("$1.24");
+  });
+});
+
+describe("formatPercent", () => {
+  it("shows whole percentages without decimals", () => {
+    expect(formatPercent(0.8)).toBe("80%");
+    expect(formatPercent(0.995)).toBe("99.5%");
+    expect(formatPercent(null)).toBe("—");
   });
 });

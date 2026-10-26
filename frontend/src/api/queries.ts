@@ -12,9 +12,11 @@ import {
   getConfig,
   getDocument,
   getExtraction,
+  getMetrics,
   getResult,
   getRuns,
   getText,
+  getTrace,
   listDocuments,
   reprocessDocument,
   uploadDocument,
@@ -34,6 +36,9 @@ export const queryKeys = {
   runs: (id: string) => ["runs", id] as const,
   text: (id: string) => ["text", id] as const,
   extraction: (id: string) => ["extraction", id] as const,
+  traces: (id: string) => ["trace", id] as const,
+  trace: (id: string, runId: string | undefined) => ["trace", id, runId ?? "latest"] as const,
+  metrics: (days: number | undefined) => ["metrics", days ?? "all"] as const,
 };
 
 /** Only network failures and server errors are worth retrying; 4xx answers are final. */
@@ -91,6 +96,25 @@ export function useRuns(id: string, { live }: { live: boolean }) {
   });
 }
 
+/** The run's trace (PRD 0007 D6); polled with the runs while the document is processing. */
+export function useTrace(id: string, runId: string | undefined, { live }: { live: boolean }) {
+  return useQuery({
+    queryKey: queryKeys.trace(id, runId),
+    queryFn: () => getTrace(id, runId),
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === id ? previous : undefined,
+    refetchInterval: live ? POLL_INTERVAL_MS : false,
+  });
+}
+
+export function useMetrics(days: number | undefined) {
+  return useQuery({
+    queryKey: queryKeys.metrics(days),
+    queryFn: () => getMetrics(days),
+    placeholderData: (previous) => previous,
+  });
+}
+
 export function useResult(id: string, { enabled }: { enabled: boolean }) {
   return useQuery({
     queryKey: queryKeys.result(id),
@@ -123,6 +147,7 @@ export function useRefreshOnFinish(id: string, status: DocumentStatus | undefine
     if (previous.current === "processing" && status && status !== "processing") {
       for (const key of [
         queryKeys.runs(id),
+        queryKeys.traces(id),
         queryKeys.result(id),
         queryKeys.text(id),
         queryKeys.extraction(id),
@@ -142,6 +167,7 @@ export function markProcessing(queryClient: QueryClient, id: string): void {
   );
   queryClient.removeQueries({ queryKey: queryKeys.result(id) });
   void queryClient.invalidateQueries({ queryKey: queryKeys.runs(id) });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.traces(id) });
   void queryClient.invalidateQueries({ queryKey: queryKeys.documents });
 }
 

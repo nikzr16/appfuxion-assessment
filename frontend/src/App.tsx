@@ -3,6 +3,7 @@ import type { RouteObject } from "react-router";
 import { AppLayout } from "./components/layout/AppLayout.tsx";
 import DocumentDetailPage from "./features/detail/DocumentDetailPage.tsx";
 import DocumentsPage from "./features/documents/DocumentsPage.tsx";
+import MetricsPage from "./features/metrics/MetricsPage.tsx";
 import UploadPage from "./features/upload/UploadPage.tsx";
 import NotFoundPage from "./pages/NotFoundPage.tsx";
 
@@ -14,6 +15,7 @@ export const routes: RouteObject[] = [
       { path: "/", element: <UploadPage /> },
       { path: "/documents", element: <DocumentsPage /> },
       { path: "/documents/:id", element: <DocumentDetailPage /> },
+      { path: "/metrics", element: <MetricsPage /> },
       { path: "*", element: <NotFoundPage /> },
     ],
   },

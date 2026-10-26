@@ -29,6 +29,10 @@
   --info: #0369a1;
   --info-soft: #e9f5fd;
   --ring: #6366f1;
+  /* Trace timeline series (0007): tool steps vs LLM calls. Validated as a categorical
+     pair on both surfaces (lightness, chroma, CVD and normal-vision separation, contrast). */
+  --series-tool: #4f46e5;
+  --series-llm: #eb6834;
   --shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 4px 16px rgb(15 23 42 / 0.05);
   color-scheme: light;
 }
@@ -55,6 +59,8 @@
   --info: #38bdf8;
   --info-soft: rgb(56 189 248 / 0.12);
   --ring: #a5abff;
+  --series-tool: #9085e9;
+  --series-llm: #d95926;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.25);
   color-scheme: dark;
 }
@@ -84,6 +90,8 @@
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
   --color-ring: var(--ring);
+  --color-series-tool: var(--series-tool);
+  --color-series-llm: var(--series-llm);
 
   --shadow-card: var(--shadow);
 }
