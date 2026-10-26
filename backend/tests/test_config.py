@@ -24,6 +24,9 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "STORAGE_DIR",
         "VISION_MAX_PAGES",
         "OPENAI_API_KEY",
+        "AGENT_MODE",
+        "BASE_CURRENCY",
+        "AGENT_MAX_STEPS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -90,3 +93,29 @@ def test_vision_max_pages_defaults_to_five_and_reads_the_environment(
 def test_vision_max_pages_must_be_at_least_one(value: int) -> None:
     with pytest.raises(ValidationError):
         make_settings(vision_max_pages=value)
+
+
+def test_agent_settings_defaults() -> None:
+    settings = make_settings()
+    assert settings.agent_mode == "multi"  # runs the single agent until B4 (PRD 0005 D13)
+    assert settings.base_currency == "MYR"
+    assert settings.agent_max_steps == 8
+
+
+def test_base_currency_is_normalised_and_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BASE_CURRENCY", " sgd ")
+    assert make_settings().base_currency == "SGD"
+
+
+@pytest.mark.parametrize("value", ["RM", "MYRR", "", "12A"])
+def test_base_currency_must_be_a_three_letter_code(value: str) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(base_currency=value)
+
+
+@pytest.mark.parametrize("value", [0, 31])
+def test_agent_max_steps_is_bounded(value: int) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(agent_max_steps=value)

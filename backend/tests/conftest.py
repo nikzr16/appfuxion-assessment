@@ -34,6 +34,7 @@ from app.core.db import Base, SessionLocal, engine  # noqa: E402
 from app.core.llm import FakeLLM, get_llm_client  # noqa: E402
 from app.core.storage import LocalStorage, get_storage  # noqa: E402
 from app.main import app  # noqa: E402
+from app.modules.documents.pipeline import register_pipeline_runner  # noqa: E402
 
 
 def _ensure_test_database() -> None:
@@ -79,6 +80,18 @@ def clean_tables(migrated_database: None) -> Iterator[None]:
         names = ", ".join(f'"{name}"' for name in tables)
         with engine.begin() as conn:
             conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
+
+
+@pytest.fixture(autouse=True)
+def no_pipeline() -> Iterator[None]:
+    """Uploads in tests do not run the agent unless a test opts in (``agent_pipeline``).
+
+    ``app.main`` registers the Document Agent at import; earlier modules' upload tests
+    expect a document to stay ``processing``, so the hook is a no-op by default.
+    """
+    register_pipeline_runner(None)
+    yield
+    register_pipeline_runner(None)
 
 
 @pytest.fixture

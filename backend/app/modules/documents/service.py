@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.core.errors import (
     AppError,
+    ConflictError,
     NotFoundError,
     PayloadTooLargeError,
     UnsupportedMediaError,
@@ -218,6 +219,20 @@ def mark_failed(db: Session, document_id: uuid.UUID, error: str) -> DocumentRead
     document = crud.update_status(db, document_id, DocumentStatus.FAILED, error[:_MAX_ERROR_CHARS])
     if document is None:
         raise NotFoundError(f"Document not found: {document_id}")
+    return _to_read(document)
+
+
+def restart_processing(db: Session, document_id: uuid.UUID) -> DocumentRead:
+    """Put a finished document back to ``processing`` for a reprocess; the caller commits.
+
+    Raises ``NotFoundError`` for an unknown document and ``ConflictError``
+    (``already_processing``) when it is still being processed.
+    """
+    if not crud.restart_processing(db, document_id):
+        _get_or_raise(db, document_id)
+        raise ConflictError("The document is already being processed.", code="already_processing")
+    document = _get_or_raise(db, document_id)
+    db.refresh(document)
     return _to_read(document)
 
 

@@ -18,7 +18,7 @@ def test_pgvector_type_is_usable(db_session: Session) -> None:
 
 def test_alembic_version_is_at_head(db_session: Session) -> None:
     version = db_session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert version == "0004"
+    assert version == "0005"
 
 
 def test_documents_table_has_a_native_uuid_primary_key(db_session: Session) -> None:
@@ -272,3 +272,139 @@ def test_deleting_a_document_cascades_to_its_extraction(db_session: Session) -> 
     db_session.commit()
 
     assert db_session.execute(text("SELECT count(*) FROM extractions")).scalar() == 0
+
+
+# -- agent_runs (0005) ----------------------------------------------------------------
+
+
+def test_agent_runs_table_has_native_uuid_keys_and_jsonb_columns(db_session: Session) -> None:
+    columns = dict(
+        db_session.execute(
+            text(
+                "SELECT column_name, udt_name FROM information_schema.columns "
+                "WHERE table_name = 'agent_runs'"
+            )
+        ).all()
+    )
+    assert columns["id"] == "uuid"
+    assert columns["document_id"] == "uuid"
+    assert columns["steps"] == "jsonb"
+    assert columns["result"] == "jsonb"
+    assert set(columns) == {
+        "id",
+        "document_id",
+        "mode",
+        "trigger",
+        "status",
+        "steps",
+        "result",
+        "summary",
+        "error_code",
+        "error",
+        "model",
+        "agent_prompt_version",
+        "summary_prompt_version",
+        "prompt_tokens",
+        "completion_tokens",
+        "started_at",
+        "finished_at",
+    }
+
+
+def test_agent_runs_table_has_its_constraints_and_indexes(db_session: Session) -> None:
+    constraints = dict(
+        db_session.execute(
+            text(
+                "SELECT conname, contype FROM pg_constraint "
+                "WHERE conrelid = 'agent_runs'::regclass AND contype <> 'n'"
+            )
+        ).all()
+    )
+    assert constraints == {
+        "pk_agent_runs": "p",
+        "fk_agent_runs_document_id_documents": "f",
+        "ck_agent_runs_mode_valid": "c",
+        "ck_agent_runs_trigger_valid": "c",
+        "ck_agent_runs_status_valid": "c",
+        "ck_agent_runs_prompt_tokens_non_negative": "c",
+        "ck_agent_runs_completion_tokens_non_negative": "c",
+    }
+    indexes = dict(
+        db_session.execute(
+            text("SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'agent_runs'")
+        ).all()
+    )
+    assert "ix_agent_runs_document_id_started_at" in indexes
+    running = indexes["uq_agent_runs_document_running"]
+    assert "UNIQUE" in running
+    assert "WHERE" in running and "running" in running
+
+
+def _insert_run(
+    db_session: Session,
+    document_id: str,
+    *,
+    status: str = "running",
+    mode: str = "single",
+    trigger: str = "upload",
+    prompt_tokens: int = 0,
+) -> None:
+    db_session.execute(
+        text(
+            "INSERT INTO agent_runs (id, document_id, mode, trigger, status, "
+            "agent_prompt_version, summary_prompt_version, prompt_tokens) VALUES "
+            "(gen_random_uuid(), :document_id, :mode, :trigger, :status, 'a1', 's1', "
+            ":prompt_tokens)"
+        ),
+        {
+            "document_id": document_id,
+            "status": status,
+            "mode": mode,
+            "trigger": trigger,
+            "prompt_tokens": prompt_tokens,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"status": "done"}, {"mode": "solo"}, {"trigger": "cron"}, {"prompt_tokens": -1}],
+)
+def test_agent_runs_check_constraints_reject_bad_values(
+    db_session: Session, overrides: dict[str, object]
+) -> None:
+    document_id = _insert_document(db_session)
+    with pytest.raises(IntegrityError):
+        _insert_run(db_session, document_id, **overrides)  # type: ignore[arg-type]
+    db_session.rollback()
+
+
+def test_agent_runs_defaults_steps_to_an_empty_list(db_session: Session) -> None:
+    document_id = _insert_document(db_session)
+    _insert_run(db_session, document_id)
+    steps = db_session.execute(
+        text("SELECT steps FROM agent_runs WHERE document_id = :id"), {"id": document_id}
+    ).scalar()
+    assert steps == []
+    db_session.rollback()
+
+
+def test_agent_runs_allow_one_running_run_but_many_finished_runs(db_session: Session) -> None:
+    document_id = _insert_document(db_session)
+    _insert_run(db_session, document_id, status="completed")
+    _insert_run(db_session, document_id, status="failed")
+    _insert_run(db_session, document_id, status="running")
+    with pytest.raises(IntegrityError):
+        _insert_run(db_session, document_id, status="running")
+    db_session.rollback()
+
+
+def test_deleting_a_document_cascades_to_its_agent_runs(db_session: Session) -> None:
+    document_id = _insert_document(db_session)
+    _insert_run(db_session, document_id, status="completed")
+    db_session.execute(text("DELETE FROM documents WHERE id = :id"), {"id": document_id})
+    remaining = db_session.execute(
+        text("SELECT count(*) FROM agent_runs WHERE document_id = :id"), {"id": document_id}
+    ).scalar()
+    assert remaining == 0
+    db_session.rollback()

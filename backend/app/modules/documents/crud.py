@@ -1,7 +1,7 @@
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.modules.documents.model import Document
@@ -82,3 +82,19 @@ def update_status(
     document.error = error
     db.flush()
     return document
+
+
+def restart_processing(db: Session, document_id: uuid.UUID) -> bool:
+    """Set a document that is not ``processing`` back to ``processing`` (clearing its error)
+    and flush; ``False`` when it is unknown or already processing. The caller commits.
+
+    One conditional ``UPDATE``, so two concurrent reprocess requests cannot both win.
+    """
+    result = db.execute(
+        update(Document)
+        .where(Document.id == document_id, Document.status != DocumentStatus.PROCESSING.value)
+        .values(status=DocumentStatus.PROCESSING.value, error=None, updated_at=func.now())
+        .execution_options(synchronize_session=False)
+    )
+    db.flush()
+    return result.rowcount == 1

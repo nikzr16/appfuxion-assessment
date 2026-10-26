@@ -182,7 +182,8 @@ Flow for each module:
   committed. Keys: `OPENAI_API_KEY`, model names (`OPENAI_MODEL`, `OPENAI_VISION_MODEL`,
   `OPENAI_EMBEDDING_MODEL`), `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
   `POSTGRES_HOST` (`localhost` locally, `db` in Compose), `DB_PORT`, `AGENT_MODE`,
-  `MAX_UPLOAD_MB`, `STORAGE_DIR`, `VISION_MAX_PAGES`.
+  `MAX_UPLOAD_MB`, `STORAGE_DIR`, `VISION_MAX_PAGES`, `BASE_CURRENCY`,
+  `AGENT_MAX_STEPS`.
 - Never commit real keys or passwords. The repo is public at submission.
 
 ## Testing And Definition Of Done

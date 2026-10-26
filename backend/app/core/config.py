@@ -4,11 +4,12 @@ Values come from real environment variables first (Docker Compose), then the roo
 ``.env`` file (``../.env`` when running from ``backend/``, or ``.env`` in the cwd).
 """
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
 
@@ -54,6 +55,20 @@ class Settings(BaseSettings):
     # -- Text extraction ------------------------------------------------------
     # Most pages of a scanned PDF sent to the vision model; later pages are skipped.
     vision_max_pages: int = Field(default=5, ge=1)
+
+    # -- Agent ------------------------------------------------------------------
+    # Totals in another currency are converted to this one (ISO 4217 code).
+    base_currency: str = "MYR"
+    # Most model turns one agent run may take before it fails with ``agent_max_steps``.
+    agent_max_steps: int = Field(default=8, ge=1, le=30)
+
+    @field_validator("base_currency")
+    @classmethod
+    def _normalise_base_currency(cls, value: str) -> str:
+        code = value.strip().upper()
+        if not re.fullmatch(r"[A-Z]{3}", code):
+            raise ValueError("BASE_CURRENCY must be a 3-letter ISO 4217 code such as MYR")
+        return code
 
     @model_validator(mode="after")
     def _derive_database_url(self) -> "Settings":

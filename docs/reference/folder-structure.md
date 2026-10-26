@@ -13,10 +13,12 @@ current state; record the divergence in the decision log.
 
 ## Overview
 
-Structure of the Document Intelligence Agent repository as of feature `0004`
-(validation): a FastAPI backend with shared core infrastructure, a `health` module,
+Structure of the Document Intelligence Agent repository as of feature `0005`
+(agent): a FastAPI backend with shared core infrastructure, a `health` module,
 the `documents` upload module, the `text_extraction` module, the `structured_extraction`
-module and the pure `validation` module, a Vite + React frontend skeleton, PostgreSQL + pgvector in Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
+module, the pure `validation` module and the `agent` module (Document Agent, the shared
+`AgentRunner`, the upload pipeline), a Vite + React frontend skeleton, PostgreSQL + pgvector
+in Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
 
 ## Directory Layout
 
@@ -24,8 +26,8 @@ module and the pure `validation` module, a Vite + React frontend skeleton, Postg
 .
 ├── backend/
 │   ├── app/
-│   │   ├── main.py                 # create_app(), ROUTERS list, /api prefix
-│   │   ├── models.py               # model registry imported by Alembic (documents, text_extraction, structured_extraction)
+│   │   ├── main.py                 # create_app(), ROUTERS list, /api prefix, registers the agent pipeline
+│   │   ├── models.py               # model registry imported by Alembic (agent, documents, text_extraction, structured_extraction)
 │   │   ├── core/
 │   │   │   ├── config.py           # pydantic-settings Settings, get_settings()
 │   │   │   ├── db.py               # engine, SessionLocal, Base, get_db
@@ -35,23 +37,25 @@ module and the pure `validation` module, a Vite + React frontend skeleton, Postg
 │   │   │   └── logging.py          # JSON formatter, document_id context var
 │   │   └── modules/
 │   │       ├── health/             # router.py, service.py, schema.py
-│   │       ├── documents/          # model, crud, schema, service, router, pipeline (hook for 0005)
-│   │       ├── text_extraction/    # model, crud, schema, service, router, prompts (PDF parser + vision)
+│   │       ├── documents/          # model, crud, schema, service, router, pipeline (hook + register_pipeline_runner)
+│   │       ├── text_extraction/    # model, crud, schema, service (render lock), router, prompts (PDF parser + vision)
 │   │       ├── structured_extraction/  # model, crud, schema (InvoiceData), service, router, prompts
-│   │       └── validation/         # pure: schema (report, issue codes), service (validate_invoice, convert_currency), currencies (data)
+│   │       ├── validation/         # pure: schema (report, issue codes), service (validate_invoice, convert_currency), currencies (data)
+│   │       └── agent/              # model, crud, schema, service, router, prompts, runner (AgentRunner), tools (5 document tools)
 │   ├── migrations/
 │   │   ├── env.py                  # URL from settings, metadata from app.models
 │   │   ├── script.py.mako
 │   │   └── versions/               # 0001_enable_pgvector.py, 0002_create_documents.py, 0003_create_document_texts.py,
-│   │                               # 0004_create_extractions.py
+│   │                               # 0004_create_extractions.py, 0005_create_agent_runs.py
 │   ├── tests/
-│   │   ├── conftest.py             # test DB, migrate once, client / fake_llm / storage fixtures
+│   │   ├── conftest.py             # test DB, migrate once, client / fake_llm / storage fixtures, no-op pipeline by default
 │   │   ├── core/                   # test_llm, test_storage, test_errors, test_logging
 │   │   ├── modules/health/         # test_router, test_service
 │   │   ├── modules/documents/      # conftest (byte samples, pipeline spy), test_router, test_service
-│   │   ├── modules/text_extraction/  # conftest (make_document), samples (PDF/image builders), test_router, test_service
+│   │   ├── modules/text_extraction/  # conftest (make_document), samples (PDF/image builders), test_router, test_service, test_render_lock
 │   │   ├── modules/structured_extraction/  # conftest (make_document with text, invoice()), test_schema, test_service, test_router
 │   │   ├── modules/validation/     # conftest (make_invoice(), line(), TODAY), test_validate_invoice, test_convert_currency, test_currencies, test_schema, test_layering
+│   │   ├── modules/agent/          # conftest (tool_turn, text_turn, happy_script, agent_pipeline), test_runner, test_tools, test_service, test_router
 │   │   └── test_app.py, test_config.py, test_migrations.py
 │   ├── alembic.ini
 │   ├── pyproject.toml              # deps (pdfplumber, pypdfium2, pillow, pycountry; dev: reportlab), ruff, pytest config
@@ -86,11 +90,14 @@ forward `/api` to the backend.
 | Method | Path | Module | Response |
 |---|---|---|---|
 | GET | `/api/health` | `health` | 200 `{status: "ok", database: "ok"}`; 503 `{status: "degraded", database: "error"}` |
-| POST | `/api/documents` | `documents` | multipart field `file` (PDF/JPEG/PNG, ≤ `MAX_UPLOAD_MB`) → 202 `DocumentUploadResponse`; 415 / 413 / 422 on rejection |
+| POST | `/api/documents` | `documents` | multipart field `file` (PDF/JPEG/PNG, ≤ `MAX_UPLOAD_MB`) → 202 `DocumentUploadResponse` and a background Document Agent run; 415 / 413 / 422 on rejection; 502 `llm_not_configured` without `OPENAI_API_KEY` (nothing stored) |
 | GET | `/api/documents/{document_id}` | `documents` | 200 `DocumentRead`; 404 unknown id; 422 id not a UUID |
 | GET | `/api/documents` | `documents` | `?limit=1..100 (20)&offset=0&status=` → 200 `DocumentList`, newest first |
 | GET | `/api/documents/{document_id}/text` | `text_extraction` | 200 `DocumentTextResponse` once text exists (any document status); 404 unknown id; 422 id not a UUID; 409 `text_not_ready` (still `processing`) / `text_unavailable` (`completed` / `failed`, message includes the document's error). Read-only: never starts an extraction or calls OpenAI |
 | GET | `/api/documents/{document_id}/extraction` | `structured_extraction` | 200 `ExtractionResponse` once structured data exists (any document status); 404 unknown id; 422 id not a UUID; 409 `extraction_not_ready` (still `processing`) / `extraction_unavailable` (`completed` / `failed`, message includes the document's error). Read-only: never extracts or calls OpenAI |
+| GET | `/api/documents/{document_id}/result` | `agent` | 200 `AgentResult` when `completed` (latest completed run); 409 `result_not_ready` (`processing`) / `result_unavailable` (`failed`, message includes the document's error); 404; 422. Read-only |
+| POST | `/api/documents/{document_id}/reprocess` | `agent` | 202 `DocumentUploadResponse` (`processing`) and a background agent run with forced re-extraction; 409 `already_processing`; 404; 422; 502 `llm_not_configured` |
+| GET | `/api/documents/{document_id}/runs` | `agent` | 200 `AgentRunRead[]`, newest first, each with its tool-call `steps`; 404; 422 |
 | GET | `/api/docs` | FastAPI | Swagger UI (`/api/openapi.json` for the schema) |
 
 ## Schemas (DTOs)
@@ -119,6 +126,10 @@ forward `/api` to the backend.
 | `ValidationIssue` | `validation` | `field` (JSON path into `InvoiceData`, e.g. `line_items[2].amount`, 0-based), `code`, `severity`, `message` (sentence with the numbers), `expected` / `actual` (`Decimal \| null`, exact; set on the numeric issues) |
 | `ValidationReport` | `validation` | `status`, `issues: ValidationIssue[]` (fixed order); JSON money as decimal strings |
 | `ConversionResult` | `validation` | `original_amount`, `from_currency`, `to_currency`, `rate` (10 significant digits), `converted_amount` (half-up to target minor units), `rate_date: date`, `source` |
+| `AgentMode` / `RunTrigger` / `RunStatus` / `StepStatus` | `agent` | `single \| multi` / `upload \| reprocess` / `running \| completed \| failed` / `ok \| error` |
+| `ToolStep` | `agent` | `index`, `turn` (model turn, 1-based), `tool`, `arguments`, `status`, `result` (exactly what the model was sent; never raw text), `error: {code, message} \| null`, `duration_ms`, `started_at` |
+| `AgentResult` | `agent` | `document_id`, `structured_data: InvoiceData`, `validation: ValidationReport`, `conversion: ConversionResult \| null`, `summary` — body of `GET /result`, stored in `agent_runs.result` |
+| `AgentRunRead` | `agent` | every `agent_runs` column except `result` |
 | Error body | `core/errors.py` | `{"error": {"code": str, "message": str, "details"?: any}}` — used for `AppError`, framework HTTP errors (404/405) and request validation (422, `details` = field errors) |
 
 Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_type` (415),
@@ -131,7 +142,17 @@ Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_ty
 `invalid_llm_output` / `llm_refused` (502, `StructuredExtractionError`; raised by
 `structured_extraction.service.extract_structured_data`), and `unsupported_currency` /
 `invalid_amount` (422, `CurrencyConversionError`; raised by
-`validation.service.convert_currency`).
+`validation.service.convert_currency`), and `result_not_ready` / `result_unavailable` /
+`already_processing` (409, agent routes).
+
+Agent run error codes (stored in `agent_runs.error_code` and as `documents.error =
+"code: message"`, never an HTTP response): `agent_incomplete` (the model stopped calling
+tools before the summary), `agent_max_steps`, `internal_error`, `run_abandoned` (a stale
+`running` row closed by the next run), or the fatal tool error's own code
+(`unreadable_document`, `no_text_found`, `invalid_llm_output`, `llm_refused`, `llm_error`, …).
+Recoverable tool error codes (sent back to the model only): `text_not_extracted`,
+`structured_data_missing`, `validation_required`, `conversion_not_needed`,
+`unsupported_currency`, `invalid_amount`, `invalid_arguments`, `unknown_tool`.
 
 ### Validation issue codes
 
@@ -166,7 +187,7 @@ when the currency is missing or invalid).
 | Engine | PostgreSQL 18 + pgvector (`pgvector/pgvector:pg18-trixie`) |
 | Container / volume | `appfuxion-db` / `appfuxion_pgdata` (mounted at `/var/lib/postgresql`) |
 | Driver | SQLAlchemy 2.0 + psycopg 3 (`postgresql+psycopg://`) |
-| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents`; `0003` creates `document_texts`; `0004` creates `extractions` |
+| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents`; `0003` creates `document_texts`; `0004` creates `extractions`; `0005` creates `agent_runs` |
 | ID rule | Every table's primary key is a native `UUID` (v4, `uuid.uuid4()`), exposed as a plain dashed UUID |
 | Test database | `appfuxion_test` on the same server (created and migrated by `conftest.py`) |
 
@@ -225,6 +246,33 @@ Constraints: `pk_extractions`, `uq_extractions_document_id`,
 `fk_extractions_document_id_documents`, `ck_extractions_attempts_positive`,
 `ck_extractions_prompt_tokens_non_negative`, `ck_extractions_completion_tokens_non_negative`.
 
+### Table `agent_runs`
+
+One row per agent run (upload and every reprocess), written by `agent.service`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `UUID` PK | v4 |
+| `document_id` | `UUID` | FK `documents.id`, `ON DELETE CASCADE` |
+| `mode` | `VARCHAR(20)` | `CHECK` `single` / `multi`; the mode that actually ran (always `single` until B4) |
+| `trigger` | `VARCHAR(20)` | `CHECK` `upload` / `reprocess` |
+| `status` | `VARCHAR(20)` | `CHECK` `running` / `completed` / `failed` |
+| `steps` | `JSONB` | `ToolStep[]` in JSON mode, default `[]`; saved after every tool call |
+| `result` | `JSONB` NULL | `AgentResult` once completed |
+| `summary` | `TEXT` NULL | The final summary |
+| `error_code`, `error` | `VARCHAR(50)` / `TEXT` NULL | Why a run failed |
+| `model` | `VARCHAR(100)` NULL | Model that answered the agent loop |
+| `agent_prompt_version`, `summary_prompt_version` | `VARCHAR(50)` | `agent.document.v1`, `agent.summary.v1` |
+| `prompt_tokens`, `completion_tokens` | `INTEGER` | `CHECK >= 0`, default 0; agent-loop + summary calls only |
+| `started_at`, `finished_at` | `TIMESTAMPTZ` | `now()` default / set when the run ends |
+
+Constraints: `pk_agent_runs`, `fk_agent_runs_document_id_documents`,
+`ck_agent_runs_mode_valid`, `ck_agent_runs_trigger_valid`, `ck_agent_runs_status_valid`,
+`ck_agent_runs_prompt_tokens_non_negative`, `ck_agent_runs_completion_tokens_non_negative`;
+indexes `ix_agent_runs_document_id_started_at (document_id, started_at DESC)` and the partial
+unique `uq_agent_runs_document_running (document_id) WHERE status = 'running'` (one running
+run per document).
+
 ## Configuration
 
 Read by `app/core/config.py` from environment variables, then `../.env` / `.env`.
@@ -238,7 +286,9 @@ Read by `app/core/config.py` from environment variables, then `../.env` / `.env`
 | `POSTGRES_HOST` | `localhost` | `db` inside Compose |
 | `DB_PORT` | `5432` | Host port for the db container / a local backend; Compose pins the backend to 5432 |
 | `DATABASE_URL` | blank | Optional full URL; derived from `POSTGRES_*` when blank |
-| `AGENT_MODE` | `multi` | `single` or `multi` |
+| `AGENT_MODE` | `multi` | `single` or `multi`; `multi` logs a warning and runs the single Document Agent until B4 |
+| `BASE_CURRENCY` | `MYR` | 3-letter ISO 4217 code; totals in another currency are converted to it (it must be in the rate table for a conversion to succeed) |
+| `AGENT_MAX_STEPS` | `8` | 1–30; most model turns per agent run (`agent_max_steps` when reached) |
 | `MAX_UPLOAD_MB` | `10` | Upload size limit |
 | `STORAGE_DIR` | `./storage` | Upload directory (relative to `backend/`); `/app/storage` in Compose |
 | `VISION_MAX_PAGES` | `5` | Most pages of a scanned PDF sent to the vision model (>= 1); later pages are skipped and logged |
@@ -263,6 +313,7 @@ ROUTERS: list[APIRouter] = [
     documents_router,
     text_extraction_router,
     structured_extraction_router,
+    agent_router,
 ]
 ```
 
@@ -270,14 +321,28 @@ A new module's ORM models are imported in `app/models.py` so Alembic autogenerat
 LLM access is injected with `Depends(get_llm_client)`; tests override it with `FakeLLM`.
 
 The document pipeline is injected with `Depends(get_document_pipeline)`
-(`app/modules/documents/pipeline.py`, signature `(document_id: UUID) -> None`). Until
-0005 it is a no-op, so uploads stay `processing`. `service.run_pipeline` runs it as a
-background task in its own DB session and marks the document `failed` if it raises; the
-pipeline marks `completed` itself via `service.mark_completed` (flushes only; the caller commits).
+(`app/modules/documents/pipeline.py`, signature `(document_id: UUID) -> None`). The dependency
+resolves `get_llm_client` and `get_storage` and returns the runner registered with
+`register_pipeline_runner` (bound to them), or a no-op when none is registered. `app/main.py`
+registers `agent.service.run_document_agent`, so `documents` never imports `agent`.
+`service.run_pipeline` runs the pipeline as a background task and marks the document `failed`
+if it raises (a safety net: the agent marks `completed` / `failed` itself, together with its
+run). Tests register no runner by default (autouse fixture); agent tests opt in with
+`agent_pipeline`. `documents.service.restart_processing(db, id)` flips a finished document
+back to `processing` with one conditional `UPDATE` (409 `already_processing` otherwise).
 
-Text extraction is a plain service function, not wired into the upload pipeline:
+The agent (`app/modules/agent/`): `runner.AgentRunner(llm, tools, max_steps=…)` is the
+shared OpenAI tool-calling loop (one step = one model turn, temperature 0, strict function
+tools, `ToolError(code, message, fatal)`); `tools.build_document_tools(ctx)` binds the five
+tools to one document and enforces the order (each tool needs its predecessor *in this run*);
+`service.run_document_agent(document_id, *, llm, storage, trigger, force)` opens its own
+session, records an `agent_runs` row, saves each step as it happens, and completes or fails
+the run and the document in one transaction.
+
+Text extraction is a plain service function, called by the agent's tool:
 `text_extraction.service.extract_text(db, storage, llm, document_id, *, force=False)` is what
-the 0005 agent tool will call. It commits its own row, never changes the document status and
+the 0005 `extract_text` tool calls. PDF rendering holds the module's `_RENDER_LOCK`
+(pypdfium2 is not thread-safe). It commits its own row, never changes the document status and
 raises `TextExtractionError` / `LLMError` for the caller to turn into `failed`.
 `text_extraction.service.find_text(db, document_id)` returns the saved text or `None` (never
 extracts) for other modules.
@@ -296,7 +361,7 @@ never raises, and `validation.service.convert_currency(amount: Decimal, from_cur
 to_currency) -> ConversionResult` uses the static rate snapshot in
 `validation/currencies.py` (25 currencies, USD base, `RATES_AS_OF` 2026-10-26, source
 ExchangeRate-API open access). `is_iso_currency(code)` and `minor_units(code)` are public
-helpers. Nothing calls them yet; the 0005 agent tools will.
+helpers. The 0005 agent tools call them.
 
 LLM seam: `LLMClient.complete(..., response_format=X)` returns `LLMResponse.parsed`; a reply
 that fails `X`'s validation raises `LLMOutputError` (both `OpenAILLMClient` and `FakeLLM`),
@@ -336,3 +401,6 @@ and a refusal is returned as `LLMResponse.refusal` with `parsed=None`.
 | `docs/prd/0004-validation-prd.md` | Intent | Validation goals and decisions (D1-D12) |
 | `docs/plan/0004-validation-plan.md` | Plan | Validation implementation path |
 | `docs/decisions/0005-validation-implementation-divergences.md` | Decision log | 0004 validation divergences |
+| `docs/prd/0005-agent-prd.md` | Intent | Agent goals and decisions (D1-D16) |
+| `docs/plan/0005-agent-plan.md` | Plan | Agent implementation path |
+| `docs/decisions/0006-agent-implementation-divergences.md` | Decision log | 0005 agent divergences |
