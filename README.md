@@ -36,7 +36,25 @@ docker compose up --build
 | API (through the UI's proxy) | http://localhost:8080/api/health |
 | API docs (Swagger) | http://localhost:8080/api/docs |
 
-### Process a document end to end
+### Use the web UI
+
+Open http://localhost:8080 (or http://localhost:5173 in local development).
+
+1. **Upload** — drag up to 5 invoices or receipts (PDF, JPG or PNG, up to `MAX_UPLOAD_MB`
+   each) onto the page, or press Enter on the drop zone to pick them. Files are checked
+   before anything is sent; press **Upload** and the app opens the documents list.
+2. **Documents** — every upload, newest first, with its status. Filter by status and page
+   through the list; it refreshes every 10 seconds while something is processing.
+3. **Document detail** — while processing, the *Agent activity* panel shows the Extraction →
+   Validation → Reporting steps as they happen. When done: the AI summary and validation
+   status first, then the extracted fields, line items, validation issues (each one
+   highlighted on the value it concerns; click it to jump there), the currency conversion,
+   the raw text and earlier runs. A failed document shows the reason and any data saved
+   before the failure. **Reprocess** runs the whole agent again after a confirmation.
+
+The header shows the backend's health and a System / Light / Dark theme switch.
+
+### Or use the API
 
 1. Upload it. The response is `{document_id, status: "processing"}` and the Document Agent
    starts in the background:
@@ -72,6 +90,7 @@ docker compose up --build
 `/result` answers 409 `result_not_ready` while the document is processing and 409
 `result_unavailable` (with the error) when processing failed. The intermediate steps are also
 readable on their own: `GET /api/documents/<document_id>/text` and `/extraction`.
+`GET /api/config` returns the upload limit and accepted file types the UI uses.
 
 The backend waits for the database, applies the Alembic migrations (which enable the
 `vector` extension), then starts. The app and `/api/health` work without an

@@ -24,8 +24,8 @@ describe("HealthBadge", () => {
 
     render(<HealthBadge />);
 
-    expect(screen.getByRole("status")).toHaveTextContent("Checking backend");
-    expect(await screen.findByText(/Backend healthy/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Checking the backend");
+    expect(await screen.findByText("Backend healthy, database ok")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("/api/health", expect.anything());
   });
 
@@ -34,7 +34,7 @@ describe("HealthBadge", () => {
 
     render(<HealthBadge />);
 
-    expect(await screen.findByText(/Backend degraded - database error/)).toBeInTheDocument();
+    expect(await screen.findByText("Backend degraded, database error")).toBeInTheDocument();
   });
 
   it("shows unreachable when a proxy answers 503 with a non-health body", async () => {

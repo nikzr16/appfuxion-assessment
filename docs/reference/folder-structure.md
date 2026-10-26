@@ -13,12 +13,13 @@ current state; record the divergence in the decision log.
 
 ## Overview
 
-Structure of the Document Intelligence Agent repository as of feature `0005`
-(agent): a FastAPI backend with shared core infrastructure, a `health` module,
+Structure of the Document Intelligence Agent repository as of feature `0006`
+(frontend): a FastAPI backend with shared core infrastructure, a `health` module,
 the `documents` upload module, the `text_extraction` module, the `structured_extraction`
-module, the pure `validation` module and the `agent` module (Document Agent, the shared
-`AgentRunner`, the upload pipeline), a Vite + React frontend skeleton, PostgreSQL + pgvector
-in Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
+module, the pure `validation` module, the `agent` module (Document Agent, the shared
+`AgentRunner`, the upload pipeline) and the small `client_config` module, a Vite + React web
+UI (Upload, Documents, Document detail with the multi-agent view), PostgreSQL + pgvector in
+Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 
 ## Directory Layout
 
@@ -41,7 +42,8 @@ in Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
 │   │       ├── text_extraction/    # model, crud, schema, service (render lock), router, prompts (PDF parser + vision)
 │   │       ├── structured_extraction/  # model, crud, schema (InvoiceData), service, router, prompts
 │   │       ├── validation/         # pure: schema (report, issue codes), service (validate_invoice, convert_currency), currencies (data)
-│   │       └── agent/              # model, crud, schema, service, router, prompts, runner (AgentRunner), tools (5 document tools)
+│   │       ├── agent/              # model, crud, schema, service, router, prompts, runner (AgentRunner), tools (5 document tools)
+│   │       └── client_config/      # router, service, schema: GET /api/config (no DB)
 │   ├── migrations/
 │   │   ├── env.py                  # URL from settings, metadata from app.models
 │   │   ├── script.py.mako
@@ -56,6 +58,7 @@ in Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
 │   │   ├── modules/structured_extraction/  # conftest (make_document with text, invoice()), test_schema, test_service, test_router
 │   │   ├── modules/validation/     # conftest (make_invoice(), line(), TODAY), test_validate_invoice, test_convert_currency, test_currencies, test_schema, test_layering
 │   │   ├── modules/agent/          # conftest (tool_turn, text_turn, happy_script, agent_pipeline), test_runner, test_tools, test_service, test_router
+│   │   ├── modules/client_config/  # test_router, test_service
 │   │   └── test_app.py, test_config.py, test_migrations.py
 │   ├── alembic.ini
 │   ├── pyproject.toml              # deps (pdfplumber, pypdfium2, pillow, pycountry; dev: reportlab), ruff, pytest config
@@ -64,11 +67,34 @@ in Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
 │   ├── Dockerfile
 │   └── docker-entrypoint.sh        # alembic upgrade head, then exec the command
 ├── frontend/
+│   ├── index.html                  # title, favicon, inline script that applies the theme before first paint
+│   ├── public/favicon.svg
 │   ├── src/
-│   │   ├── main.tsx, App.tsx, index.css
-│   │   ├── api/client.ts           # typed fetch wrapper (+ client.test.ts)
-│   │   ├── components/HealthBadge.tsx  # (+ HealthBadge.test.tsx)
-│   │   └── test/setup.ts           # Testing Library + jest-dom setup
+│   │   ├── main.tsx                # Poppins (Latin), QueryClientProvider, createBrowserRouter
+│   │   ├── App.tsx                 # route table: / (Upload), /documents, /documents/:id, * (not found)
+│   │   ├── index.css               # Tailwind, `.dark` variant, semantic colour tokens (light + dark), base styles
+│   │   ├── api/
+│   │   │   ├── client.ts           # request(), ApiError (network_error for failed fetch), one function per endpoint (+ test)
+│   │   │   ├── types.ts            # DTO types mirroring the backend schemas (money/dates as strings)
+│   │   │   └── queries.ts          # TanStack Query keys + hooks, POLL_INTERVAL_MS (10 s), PAGE_SIZE (20), mutations
+│   │   ├── lib/                    # pure logic, each with a test: format (money/dates/sizes), issues (path → target),
+│   │   │                           # agents (tool → role lanes), upload (client checks, MAX_FILES 5), errors (friendly text),
+│   │   │                           # theme, cx, useDocumentTitle
+│   │   ├── components/
+│   │   │   ├── ui/                 # Button (+ buttonClasses), Badge, Card, Alert/ErrorAlert, Dialog (native <dialog>),
+│   │   │   │                       # Skeleton, EmptyState, CopyButton, Tabs, Pagination, LiveRegion (+ announce)
+│   │   │   ├── layout/             # AppLayout (header, nav, skip link, footer, focus on navigation), ThemeToggle (+ test)
+│   │   │   ├── HealthBadge.tsx     # compact backend status in the header (+ test)
+│   │   │   ├── StatusBadge.tsx, severity.tsx, FileIcon.tsx, PageHeader.tsx
+│   │   ├── features/
+│   │   │   ├── upload/             # UploadPage, DropZone, UploadQueue, useUploadQueue (two uploads at a time) (+ page test)
+│   │   │   ├── documents/          # DocumentsPage (URL filter/page, polling), DocumentsTable (table ≥ sm, cards < sm) (+ test)
+│   │   │   └── detail/             # DocumentDetailPage (processing / completed / failed / not found), SummaryCard,
+│   │   │                           # StructuredData, LineItemsTable, IssuesList, IssueMarker, ConversionCard,
+│   │   │                           # RawTextSection (lazy), AgentActivity + AgentLanes (multi-agent view),
+│   │   │                           # ReprocessButton (confirm dialog), labels (+ page test)
+│   │   ├── pages/NotFoundPage.tsx
+│   │   └── test/                   # setup (jsdom polyfills), fetchMock (route-based fetch stub), fixtures, render (whole app)
 │   ├── vite.config.ts              # React + Tailwind plugins, /api dev proxy, Vitest config
 │   ├── eslint.config.js, tsconfig*.json, package.json, package-lock.json
 │   ├── Dockerfile                  # node build -> nginx
@@ -77,6 +103,7 @@ in Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
 ├── docker-compose.yml              # includes db/, adds backend + frontend
 ├── .github/workflows/ci.yml        # backend + frontend jobs
 ├── .env.example                    # every config key, documented (.env is git-ignored)
+├── .claude/launch.json             # dev servers (backend :8000, frontend :5173) for the desktop app's preview
 ├── .gitattributes                  # forces LF for scripts, Dockerfiles, configs
 ├── README.md, ENGINEERING_NOTES.md
 └── docs/                           # roadmap, prd/, plan/, reference/, decisions/, templates/
@@ -98,6 +125,7 @@ forward `/api` to the backend.
 | GET | `/api/documents/{document_id}/result` | `agent` | 200 `AgentResult` when `completed` (latest completed run); 409 `result_not_ready` (`processing`) / `result_unavailable` (`failed`, message includes the document's error); 404; 422. Read-only |
 | POST | `/api/documents/{document_id}/reprocess` | `agent` | 202 `DocumentUploadResponse` (`processing`) and a background agent run with forced re-extraction; 409 `already_processing`; 404; 422; 502 `llm_not_configured` |
 | GET | `/api/documents/{document_id}/runs` | `agent` | 200 `AgentRunRead[]`, newest first, each with its tool-call `steps`; 404; 422 |
+| GET | `/api/config` | `client_config` | 200 `ClientConfig` — public settings for the UI; no secrets, no DB |
 | GET | `/api/docs` | FastAPI | Swagger UI (`/api/openapi.json` for the schema) |
 
 ## Schemas (DTOs)
@@ -130,6 +158,7 @@ forward `/api` to the backend.
 | `ToolStep` | `agent` | `index`, `turn` (model turn, 1-based), `tool`, `arguments`, `status`, `result` (exactly what the model was sent; never raw text), `error: {code, message} \| null`, `duration_ms`, `started_at` |
 | `AgentResult` | `agent` | `document_id`, `structured_data: InvoiceData`, `validation: ValidationReport`, `conversion: ConversionResult \| null`, `summary` — body of `GET /result`, stored in `agent_runs.result` |
 | `AgentRunRead` | `agent` | every `agent_runs` column except `result` |
+| `ClientConfig` | `client_config` | `max_upload_mb: int`, `accepted_content_types: string[]` (sorted; the same set the upload service accepts), `base_currency` |
 | Error body | `core/errors.py` | `{"error": {"code": str, "message": str, "details"?: any}}` — used for `AppError`, framework HTTP errors (404/405) and request validation (422, `details` = field errors) |
 
 Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_type` (415),
@@ -314,6 +343,7 @@ ROUTERS: list[APIRouter] = [
     text_extraction_router,
     structured_extraction_router,
     agent_router,
+    client_config_router,
 ]
 ```
 
@@ -382,6 +412,16 @@ and a refusal is returned as `LLMResponse.refusal` with `parsed=None`.
 |---|---|
 | `pycountry` | ISO 4217 currency code lookup (LGPL-2.1, no dependencies of its own) |
 
+## Frontend dependencies added in 0006
+
+| Package | Used for |
+|---|---|
+| `react-router` | Routing (`createBrowserRouter`; memory router in tests) |
+| `@tanstack/react-query` | Fetching, polling, retries, cache invalidation |
+| `lucide-react` | Icons |
+| `@fontsource/poppins` | Self-hosted Poppins (Latin 400/500/600/700) |
+| `@testing-library/user-event` (dev) | Keyboard, click and file-upload events in tests |
+
 ## Related Documents
 
 | Document | Type | Relationship |
@@ -404,3 +444,6 @@ and a refusal is returned as `LLMResponse.refusal` with `parsed=None`.
 | `docs/prd/0005-agent-prd.md` | Intent | Agent goals and decisions (D1-D16) |
 | `docs/plan/0005-agent-plan.md` | Plan | Agent implementation path |
 | `docs/decisions/0006-agent-implementation-divergences.md` | Decision log | 0005 agent divergences |
+| `docs/prd/0006-frontend-prd.md` | Intent | Frontend goals and decisions (D1-D19) |
+| `docs/plan/0006-frontend-plan.md` | Plan | Frontend implementation path |
+| `docs/decisions/0007-frontend-implementation-divergences.md` | Decision log | 0006 frontend divergences |
