@@ -13,10 +13,10 @@ current state; record the divergence in the decision log.
 
 ## Overview
 
-Structure of the Document Intelligence Agent repository as of feature `0000` (project
-setup): a FastAPI backend with shared core infrastructure and a `health` module, a Vite +
-React frontend skeleton, PostgreSQL + pgvector in Docker, and CI. No feature modules exist
-yet; features `0001+` each add a folder under `backend/app/modules/`.
+Structure of the Document Intelligence Agent repository as of feature `0001`
+(documents): a FastAPI backend with shared core infrastructure, a `health` module and the
+`documents` upload module, a Vite + React frontend skeleton, PostgreSQL + pgvector in
+Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
 
 ## Directory Layout
 
@@ -25,24 +25,26 @@ yet; features `0001+` each add a folder under `backend/app/modules/`.
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                 # create_app(), ROUTERS list, /api prefix
-│   │   ├── models.py               # model registry imported by Alembic (no tables yet)
+│   │   ├── models.py               # model registry imported by Alembic (documents)
 │   │   ├── core/
 │   │   │   ├── config.py           # pydantic-settings Settings, get_settings()
 │   │   │   ├── db.py               # engine, SessionLocal, Base, get_db
 │   │   │   ├── llm.py              # LLMClient, OpenAILLMClient, FakeLLM, TokenUsage
-│   │   │   ├── storage.py          # Storage protocol, LocalStorage, get_storage
+│   │   │   ├── storage.py          # Storage protocol, LocalStorage (save, save_as), get_storage
 │   │   │   ├── errors.py           # AppError hierarchy + handlers (app, HTTP, request validation)
 │   │   │   └── logging.py          # JSON formatter, document_id context var
 │   │   └── modules/
-│   │       └── health/             # router.py, service.py, schema.py
+│   │       ├── health/             # router.py, service.py, schema.py
+│   │       └── documents/          # model, crud, schema, service, router, pipeline (hook for 0005)
 │   ├── migrations/
 │   │   ├── env.py                  # URL from settings, metadata from app.models
 │   │   ├── script.py.mako
-│   │   └── versions/0001_enable_pgvector.py
+│   │   └── versions/               # 0001_enable_pgvector.py, 0002_create_documents.py
 │   ├── tests/
 │   │   ├── conftest.py             # test DB, migrate once, client / fake_llm / storage fixtures
 │   │   ├── core/                   # test_llm, test_storage, test_errors, test_logging
 │   │   ├── modules/health/         # test_router, test_service
+│   │   ├── modules/documents/      # conftest (byte samples, pipeline spy), test_router, test_service
 │   │   └── test_app.py, test_config.py, test_migrations.py
 │   ├── alembic.ini
 │   ├── pyproject.toml              # deps, ruff, pytest config
@@ -77,6 +79,9 @@ forward `/api` to the backend.
 | Method | Path | Module | Response |
 |---|---|---|---|
 | GET | `/api/health` | `health` | 200 `{status: "ok", database: "ok"}`; 503 `{status: "degraded", database: "error"}` |
+| POST | `/api/documents` | `documents` | multipart field `file` (PDF/JPEG/PNG, ≤ `MAX_UPLOAD_MB`) → 202 `DocumentUploadResponse`; 415 / 413 / 422 on rejection |
+| GET | `/api/documents/{document_id}` | `documents` | 200 `DocumentRead`; 404 unknown id; 422 id not a UUID |
+| GET | `/api/documents` | `documents` | `?limit=1..100 (20)&offset=0&status=` → 200 `DocumentList`, newest first |
 | GET | `/api/docs` | FastAPI | Swagger UI (`/api/openapi.json` for the schema) |
 
 ## Schemas (DTOs)
@@ -84,6 +89,11 @@ forward `/api` to the backend.
 | Schema | Module | Fields |
 |---|---|---|
 | `HealthRead` | `health` | `status: "ok" \| "degraded"`, `database: "ok" \| "error"` |
+| `DocumentStatus` | `documents` | `processing` \| `completed` \| `failed` |
+| `DocumentUploadResponse` | `documents` | `document_id: UUID`, `status` |
+| `DocumentRead` | `documents` | `document_id: UUID`, `filename` (cleaned upload name), `version: int`, `content_type`, `size_bytes`, `status`, `error: str \| null`, `created_at`, `updated_at` (no `storage_path`) |
+| `DocumentList` | `documents` | `items: DocumentRead[]`, `total`, `limit`, `offset` |
+| `UploadedFile` (internal) | `documents` | `filename`, `content_type`, `data: bytes` — router → service |
 | Error body | `core/errors.py` | `{"error": {"code": str, "message": str, "details"?: any}}` — used for `AppError`, framework HTTP errors (404/405) and request validation (422, `details` = field errors) |
 
 Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_type` (415),
@@ -96,8 +106,26 @@ Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_ty
 | Engine | PostgreSQL 18 + pgvector (`pgvector/pgvector:pg18-trixie`) |
 | Container / volume | `appfuxion-db` / `appfuxion_pgdata` (mounted at `/var/lib/postgresql`) |
 | Driver | SQLAlchemy 2.0 + psycopg 3 (`postgresql+psycopg://`) |
-| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; no tables yet |
+| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents` |
+| ID rule | Every table's primary key is a native `UUID` (v4, `uuid.uuid4()`), exposed as a plain dashed UUID |
 | Test database | `appfuxion_test` on the same server (created and migrated by `conftest.py`) |
+
+### Table `documents`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `UUID` PK | API field `document_id` |
+| `filename` | `VARCHAR(255)` | Cleaned upload name (basename, safe characters) |
+| `version` | `INTEGER` | 1 for the first upload of a name; 2, 3, … for re-uploads (case-sensitive match) |
+| `storage_path` | `VARCHAR(255)` UNIQUE | Name on disk under `STORAGE_DIR`: `invoice.pdf`, `invoice(2).pdf`, …; internal only |
+| `content_type` | `VARCHAR(100)` | Sniffed from magic bytes |
+| `size_bytes` | `BIGINT` | |
+| `status` | `VARCHAR(20)` | `CHECK` `processing` / `completed` / `failed` |
+| `error` | `TEXT` NULL | Failure message (≤ 1000 chars) |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` | `now()` defaults; `updated_at` bumped on update |
+
+Constraints: `pk_documents`, `uq_documents_filename_version (filename, version)`,
+`uq_documents_storage_path`, `ck_documents_status_valid`; index `ix_documents_created_at`.
 
 ## Configuration
 
@@ -133,12 +161,18 @@ A new module's router is added to the single list in `app/main.py`:
 ```python
 ROUTERS: list[APIRouter] = [
     health_router,
-    # documents_router,   <- feature 0001 adds one line here
+    documents_router,
 ]
 ```
 
 A new module's ORM models are imported in `app/models.py` so Alembic autogenerate sees them.
 LLM access is injected with `Depends(get_llm_client)`; tests override it with `FakeLLM`.
+
+The document pipeline is injected with `Depends(get_document_pipeline)`
+(`app/modules/documents/pipeline.py`, signature `(document_id: UUID) -> None`). Until
+0005 it is a no-op, so uploads stay `processing`. `service.run_pipeline` runs it as a
+background task in its own DB session and marks the document `failed` if it raises; the
+pipeline marks `completed` itself via `service.mark_completed` (flushes only; the caller commits).
 
 ## Related Documents
 
@@ -146,4 +180,6 @@ LLM access is injected with `Depends(get_llm_client)`; tests override it with `F
 |---|---|---|
 | `docs/prd/0000-setup-prd.md` | Intent | Product goals behind the structures documented here |
 | `docs/plan/0000-setup-plan.md` | Plan | Planned architecture these structures realize |
+| `docs/prd/0001-documents-prd.md` | Intent | Upload API goals and decisions |
+| `docs/plan/0001-documents-plan.md` | Plan | Upload API implementation path |
 | `docs/decisions/0001-setup-implementation-divergences.md` | Decision log | Where the implementation differs from the plan |

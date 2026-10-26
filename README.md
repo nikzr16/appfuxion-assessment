@@ -6,9 +6,9 @@ structured JSON, validates the numbers with deterministic code, and writes a sho
 summary. AI agents (OpenAI tool calling) orchestrate the steps, and past invoices are
 searchable with pgvector.
 
-> **Status:** the project foundation (feature `0000`) is in place: backend skeleton,
-> PostgreSQL + pgvector, frontend skeleton, Docker Compose, and CI. Feature endpoints
-> (upload, extraction, agents) land in later numbered features; see
+> **Status:** the project foundation (feature `0000`) and the document upload API
+> (feature `0001`: `POST/GET /api/documents`) are in place. Extraction, validation and
+> the agents land in later numbered features; see
 > [`docs/product-roadmap.md`](docs/product-roadmap.md).
 
 ## Stack
@@ -33,6 +33,16 @@ docker compose up --build
 | Web UI | http://localhost:8080 (change with `FRONTEND_PORT`) |
 | API (through the UI's proxy) | http://localhost:8080/api/health |
 | API docs (Swagger) | http://localhost:8080/api/docs |
+
+Upload a document (returns `{document_id, status: "processing"}`), then poll it:
+
+```bash
+curl -F "file=@invoice.pdf;type=application/pdf" http://localhost:8080/api/documents
+```
+
+```bash
+curl http://localhost:8080/api/documents/<document_id>
+```
 
 The backend waits for the database, applies the Alembic migrations (which enable the
 `vector` extension), then starts. The app and `/api/health` work without an

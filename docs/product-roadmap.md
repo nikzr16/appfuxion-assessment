@@ -51,7 +51,7 @@ PRD yet; their numbers are expectations from the local feature map.
 
 | PRD | Module | Status | Notes |
 |---|---|---|---|
-| *planned* 0001 | `modules/documents` | planned | Part 1 — upload API |
+| `docs/prd/0001-documents-prd.md` | `modules/documents` | in progress | Part 1 — upload API; branch `feature/0001-documents` |
 | *planned* 0002 | `modules/text_extraction` | planned | Part 2 — PDF parser + OpenAI vision |
 | *planned* 0003 | `modules/structured_extraction` | planned | Part 3 — structured outputs |
 | *planned* 0004 | `modules/validation` | planned | Part 5 — built before Part 4 (agent needs the tool) |
@@ -104,6 +104,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | PRD | Phase | Module | Status |
 |---|---|---|---|
 | `docs/prd/0000-setup-prd.md` | 0 | foundation | shipped |
+| `docs/prd/0001-documents-prd.md` | 1 | documents | in progress |
 
 ## Prioritization Log
 

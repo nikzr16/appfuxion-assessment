@@ -161,8 +161,10 @@ Flow for each module:
 
 1. **Supported uploads:** `application/pdf`, `image/jpeg`, `image/png`; size limit from
    config (default 10 MB). Anything else → 415/413.
-2. **Document IDs** use a `doc_` prefix. **Status lifecycle:** `processing` → `completed` |
-   `failed`. `POST /documents` returns `{document_id, status: "processing"}`.
+2. **IDs:** every table's primary key is a native Postgres `UUID` (v4, generated with
+   Python's `uuid.uuid4()`), exposed in the API as the plain dashed UUID with no prefix.
+   **Status lifecycle:** `processing` → `completed` | `failed`. `POST /documents`
+   returns `{document_id, status: "processing"}`.
 3. **Structured invoice fields** (brief): `document_type` (`invoice | receipt | unknown`),
    `vendor`, `invoice_number`, `invoice_date`, `due_date`, `total_amount`, `currency`,
    `line_items[]` (`description`, `quantity`, `unit_price`, `amount`).
