@@ -126,3 +126,47 @@ const KIND_BY_TYPE: Record<string, string> = {
 export function fileKind(contentType: string): string {
   return KIND_BY_TYPE[contentType] ?? (contentType.split("/")[1] ?? contentType).toUpperCase();
 }
+
+/** Token counts: `842`, `9,120`, `12.3k`, `1.2M`. */
+export function formatTokens(tokens: number): string {
+  if (tokens < 10_000) return groupThousands(String(Math.round(tokens)));
+  if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+const MICROS = /^(\d+)(?:\.(\d{1,6}))?\d*$/;
+
+/** A USD decimal string → whole micro-dollars (exact; never through floating point). */
+export function costMicros(value: string): number {
+  const match = MICROS.exec(value.trim());
+  if (!match) return 0;
+  const [, whole = "0", fraction = ""] = match;
+  return Number(whole) * 1_000_000 + Number(fraction.padEnd(6, "0"));
+}
+
+/** Micro-dollars → a 6-place USD decimal string. */
+export function microsToCost(micros: number): string {
+  const whole = Math.floor(micros / 1_000_000);
+  return `${whole}.${String(micros % 1_000_000).padStart(6, "0")}`;
+}
+
+/**
+ * Estimated USD cost: `$0.0012` below a cent, `$0.042` below a dollar, `$1.24` above;
+ * `<$0.0001` for a tiny non-zero cost; `—` when unknown (an unpriced model).
+ */
+export function formatCost(value: string | null): string {
+  if (value === null) return EMPTY;
+  const micros = costMicros(value);
+  if (micros === 0) return "$0.00";
+  if (micros < 100) return "<$0.0001";
+  const dollars = micros / 1_000_000;
+  const digits = micros < 10_000 ? 4 : micros < 1_000_000 ? 3 : 2;
+  return `$${dollars.toFixed(digits)}`;
+}
+
+/** A 0–1 ratio as a percentage: `80%`, `99.5%`; `—` when unknown. */
+export function formatPercent(ratio: number | null): string {
+  if (ratio === null) return EMPTY;
+  const percent = Math.round(ratio * 1000) / 10;
+  return `${Number.isInteger(percent) ? percent.toFixed(0) : percent.toFixed(1)}%`;
+}

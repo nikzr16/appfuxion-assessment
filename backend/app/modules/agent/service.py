@@ -3,15 +3,15 @@
 import logging
 import time
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.core.errors import ConflictError
-from app.core.llm import LLMClient, TokenUsage
-from app.core.logging import bind_document_id
+from app.core.llm import Agent, LLMClient, TokenUsage
+from app.core.logging import bind_document_id, bind_trace
 from app.core.storage import Storage
 from app.modules.agent import crud, prompts
 from app.modules.agent.model import AgentRun
@@ -20,6 +20,7 @@ from app.modules.agent.schema import (
     AgentMode,
     AgentResult,
     AgentRunRead,
+    RunStats,
     RunStatus,
     RunTrigger,
     ToolStep,
@@ -74,7 +75,8 @@ def run_document_agent(
                 "agent run started",
                 extra={"run_id": str(run.id), "mode": mode.value, "trigger": trigger.value},
             )
-            _execute(db, run, llm, storage, source.content_type, force=force, today=today)
+            with bind_trace(run_id=str(run.id), agent=Agent.DOCUMENT):
+                _execute(db, run, llm, storage, source.content_type, force=force, today=today)
     finally:
         db.close()
 
@@ -100,7 +102,12 @@ def _execute(
         force=force,
         today=today,
     )
-    runner = AgentRunner(llm, build_document_tools(ctx), max_steps=settings.agent_max_steps)
+    runner = AgentRunner(
+        llm,
+        build_document_tools(ctx),
+        max_steps=settings.agent_max_steps,
+        prompt_version=prompts.AGENT_PROMPT_VERSION,
+    )
     messages = [
         {"role": "system", "content": prompts.agent_system_prompt(settings.base_currency)},
         {"role": "user", "content": prompts.agent_user_prompt(str(run.document_id), content_type)},
@@ -197,6 +204,30 @@ def list_runs(db: Session, document_id: uuid.UUID) -> list[AgentRunRead]:
     """Every run of the document, newest first, with its tool-call log (D11)."""
     documents_service.get_document(db, document_id)  # 404 when unknown
     return [AgentRunRead.model_validate(run) for run in crud.list_by_document(db, document_id)]
+
+
+def run_stats(db: Session, *, since: datetime | None = None) -> RunStats:
+    """Run counts and completed-run duration percentiles (feature 0007 metrics)."""
+    counts = crud.count_by_status(db, since=since)
+    avg, p50, p95 = crud.completed_duration_stats(db, since=since)
+    return RunStats(
+        total=sum(counts.values()),
+        running=counts.get(RunStatus.RUNNING.value, 0),
+        completed=counts.get(RunStatus.COMPLETED.value, 0),
+        failed=counts.get(RunStatus.FAILED.value, 0),
+        avg_ms=_round_ms(avg),
+        p50_ms=_round_ms(p50),
+        p95_ms=_round_ms(p95),
+    )
+
+
+def completed_run_ids(db: Session, *, since: datetime | None = None) -> list[uuid.UUID]:
+    """Ids of the runs that completed, started since ``since`` (feature 0007 metrics)."""
+    return list(crud.completed_ids(db, since=since))
+
+
+def _round_ms(value: float | None) -> int | None:
+    return round(value) if value is not None else None
 
 
 def _resolve_mode(configured: str) -> AgentMode:

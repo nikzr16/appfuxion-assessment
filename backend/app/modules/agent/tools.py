@@ -18,7 +18,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
-from app.core.llm import LLMClient, Message, TokenUsage
+from app.core.llm import LLMClient, Message, Purpose, TokenUsage
+from app.core.logging import bind_trace
 from app.core.storage import Storage
 from app.modules.agent import prompts
 from app.modules.agent.runner import NO_ARGUMENTS, Tool, ToolError, ToolHandler
@@ -250,6 +251,7 @@ def _require_structured(ctx: DocumentToolContext, tool: str) -> InvoiceData:
     return ctx.structured
 
 
+@bind_trace(purpose=Purpose.SUMMARY, prompt_version=prompts.SUMMARY_PROMPT_VERSION)
 def _complete(ctx: DocumentToolContext, messages: list[Message]) -> str:
     response = ctx.llm.complete(messages, temperature=0)
     ctx.summary_usage = ctx.summary_usage + response.usage

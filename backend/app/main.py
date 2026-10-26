@@ -11,6 +11,7 @@ from fastapi import APIRouter, FastAPI
 
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
+from app.core.llm import register_llm_recorder
 from app.core.logging import configure_logging
 from app.modules.agent import service as agent_service
 from app.modules.agent.router import router as agent_router
@@ -18,6 +19,8 @@ from app.modules.client_config.router import router as client_config_router
 from app.modules.documents.pipeline import register_pipeline_runner
 from app.modules.documents.router import router as documents_router
 from app.modules.health.router import router as health_router
+from app.modules.observability import service as observability_service
+from app.modules.observability.router import router as observability_router
 from app.modules.structured_extraction.router import router as structured_extraction_router
 from app.modules.text_extraction.router import router as text_extraction_router
 
@@ -27,6 +30,7 @@ ROUTERS: list[APIRouter] = [
     text_extraction_router,
     structured_extraction_router,
     agent_router,
+    observability_router,
     client_config_router,
 ]
 
@@ -45,6 +49,8 @@ def create_app() -> FastAPI:
     register_error_handlers(app)
     # Uploads are processed by the Document Agent (feature 0005).
     register_pipeline_runner(agent_service.run_document_agent)
+    # Every LLM call is written to the token ledger (feature 0007).
+    register_llm_recorder(observability_service.record_llm_call)
     for router in ROUTERS:
         app.include_router(router, prefix=settings.api_prefix)
 

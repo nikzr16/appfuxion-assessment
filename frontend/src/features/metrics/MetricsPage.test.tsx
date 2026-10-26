@@ -1,0 +1,100 @@
+import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it } from "vitest";
+
+import type { MetricsSummary } from "../../api/types.ts";
+import { apiError, mockApi, ok } from "../../test/fetchMock.ts";
+import { renderApp } from "../../test/render.tsx";
+
+const HEALTH = { "GET /health": ok({ status: "ok", database: "ok" }) };
+
+function makeMetrics(overrides: Partial<MetricsSummary> = {}): MetricsSummary {
+  const group = (key: string, calls: number, tokens: number, cost: string | null) => ({
+    key,
+    llm_calls: calls,
+    failed_calls: 0,
+    prompt_tokens: tokens - 100,
+    completion_tokens: 100,
+    total_tokens: tokens,
+    cost_usd: cost,
+    cost_complete: cost !== null,
+    avg_latency_ms: 1200,
+  });
+  return {
+    window_days: null,
+    since: null,
+    generated_at: "2026-10-27T02:00:00+08:00",
+    ledger_since: "2026-10-27T01:00:00+08:00",
+    documents: { total: 6, processing: 1, completed: 4, failed: 1, success_rate: 0.8 },
+    runs: { total: 5, running: 0, completed: 4, failed: 1, avg_ms: 9_500, p50_ms: 9_000, p95_ms: 14_200 },
+    llm: {
+      llm_calls: 24,
+      failed_calls: 1,
+      prompt_tokens: 8_000,
+      completion_tokens: 2_000,
+      total_tokens: 10_000,
+      cost_usd: "0.006400",
+      cost_complete: true,
+      error_rate: 1 / 24,
+      documents_with_usage: 4,
+      avg_tokens_per_document: 2_500,
+      avg_cost_per_document: "0.001600",
+    },
+    by_model: [group("gpt-4.1-mini", 24, 10_000, "0.006400")],
+    by_purpose: [group("agent_loop", 16, 6_000, "0.003800"), group("summary", 4, 1_500, "0.001000")],
+    prices_as_of: "2026-10-27",
+    ...overrides,
+  };
+}
+
+describe("MetricsPage", () => {
+  it("shows the KPI tiles and the usage tables", async () => {
+    mockApi({ ...HEALTH, "GET /metrics/summary": ok(makeMetrics()) });
+    renderApp("/metrics");
+
+    expect(await screen.findByText("Success rate")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Metrics" })).toBeInTheDocument();
+    expect(screen.getByText("80%")).toBeInTheDocument();
+    expect(screen.getByText("9.5 s")).toBeInTheDocument();
+    expect(screen.getByText(/p50 9.0 s · p95 14.2 s/)).toBeInTheDocument();
+    expect(screen.getByText("2,500")).toBeInTheDocument();
+    expect(screen.getByText("$0.0016")).toBeInTheDocument();
+    expect(screen.getByText("4.2%")).toBeInTheDocument();
+
+    const byModel = screen.getByRole("region", { name: "By model" });
+    expect(within(byModel).getByRole("rowheader", { name: "gpt-4.1-mini" })).toBeInTheDocument();
+    const byPurpose = screen.getByRole("region", { name: "By purpose" });
+    expect(within(byPurpose).getByRole("rowheader", { name: "Agent decides next step" })).toBeInTheDocument();
+    expect(screen.getByText(/static price table dated 27-10-2026/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Metrics" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("switches the time window through the URL", async () => {
+    const api = mockApi({ ...HEALTH, "GET /metrics/summary": ok(makeMetrics()) });
+    const { router } = renderApp("/metrics");
+    await screen.findByText("Success rate");
+
+    await userEvent.click(screen.getByRole("tab", { name: "7 days" }));
+
+    expect(router.state.location.search).toBe("?days=7");
+    expect(api.calls.some((call) => call.url.endsWith("/metrics/summary?days=7"))).toBe(true);
+  });
+
+  it("shows an empty state when nothing has been processed", async () => {
+    const empty = makeMetrics({
+      documents: { total: 0, processing: 0, completed: 0, failed: 0, success_rate: null },
+      llm: { ...makeMetrics().llm, llm_calls: 0 },
+    });
+    mockApi({ ...HEALTH, "GET /metrics/summary": ok(empty) });
+    renderApp("/metrics");
+
+    expect(await screen.findByText("No data yet")).toBeInTheDocument();
+  });
+
+  it("shows an error with a retry", async () => {
+    mockApi({ ...HEALTH, "GET /metrics/summary": apiError(500, "internal_error") });
+    renderApp("/metrics");
+
+    expect(await screen.findByRole("button", { name: /try again/i })).toBeInTheDocument();
+  });
+});

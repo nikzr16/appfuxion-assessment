@@ -8,8 +8,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ConflictError, LLMOutputError
-from app.core.llm import LLMClient, Message, TokenUsage
-from app.core.logging import bind_document_id
+from app.core.llm import LLMClient, Message, Purpose, TokenUsage
+from app.core.logging import bind_document_id, bind_trace
 from app.modules.documents import service as documents_service
 from app.modules.documents.schema import DocumentStatus
 from app.modules.structured_extraction import crud, prompts
@@ -82,6 +82,7 @@ def _format_errors(errors: Sequence[Mapping[str, Any]]) -> list[str]:
 # -- LLM call -------------------------------------------------------------------------
 
 
+@bind_trace(purpose=Purpose.STRUCTURED_EXTRACTION, prompt_version=prompts.PROMPT_VERSION)
 def _extract_with_retry(llm: LLMClient, text: str) -> _Outcome:
     """Ask for ``InvoiceData``; on an invalid reply retry once with the errors fed back.
 

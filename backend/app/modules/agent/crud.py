@@ -1,8 +1,9 @@
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.orm import Session
 
 from app.modules.agent.model import AgentRun
@@ -92,3 +93,35 @@ def list_by_document(db: Session, document_id: uuid.UUID) -> Sequence[AgentRun]:
         .scalars()
         .all()
     )
+
+
+def _since(query: Select[Any], since: datetime | None) -> Select[Any]:
+    return query if since is None else query.where(AgentRun.started_at >= since)
+
+
+def count_by_status(db: Session, *, since: datetime | None = None) -> dict[str, int]:
+    query = select(AgentRun.status, func.count()).group_by(AgentRun.status)
+    return dict(db.execute(_since(query, since)).all())
+
+
+def completed_duration_stats(
+    db: Session, *, since: datetime | None = None
+) -> tuple[float | None, float | None, float | None]:
+    """Average, p50 and p95 duration of completed runs in milliseconds."""
+    duration_ms = func.extract("epoch", AgentRun.finished_at - AgentRun.started_at) * 1000
+    query = select(
+        func.avg(duration_ms),
+        func.percentile_cont(0.5).within_group(duration_ms),
+        func.percentile_cont(0.95).within_group(duration_ms),
+    ).where(AgentRun.status == RunStatus.COMPLETED.value, AgentRun.finished_at.is_not(None))
+    avg, p50, p95 = db.execute(_since(query, since)).one()
+    return (
+        float(avg) if avg is not None else None,
+        float(p50) if p50 is not None else None,
+        float(p95) if p95 is not None else None,
+    )
+
+
+def completed_ids(db: Session, *, since: datetime | None = None) -> Sequence[uuid.UUID]:
+    query = select(AgentRun.id).where(AgentRun.status == RunStatus.COMPLETED.value)
+    return db.execute(_since(query, since)).scalars().all()

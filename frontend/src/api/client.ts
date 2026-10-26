@@ -8,8 +8,10 @@ import type {
   DocumentRead,
   DocumentStatus,
   DocumentTextResponse,
+  DocumentTrace,
   DocumentUploadResponse,
   ExtractionResponse,
+  MetricsSummary,
 } from "./types.ts";
 
 const API_BASE: string = import.meta.env.VITE_API_BASE ?? "/api";
@@ -172,4 +174,18 @@ export function reprocessDocument(id: string): Promise<DocumentUploadResponse> {
   return request<DocumentUploadResponse>(`/documents/${encodeURIComponent(id)}/reprocess`, {
     method: "POST",
   });
+}
+
+// -- Observability (0007) ------------------------------------------------------------
+
+/** `GET /api/documents/{id}/trace`: the latest run, or `runId`. */
+export function getTrace(id: string, runId?: string): Promise<DocumentTrace> {
+  const query = runId ? `?${new URLSearchParams({ run_id: runId }).toString()}` : "";
+  return request<DocumentTrace>(`/documents/${encodeURIComponent(id)}/trace${query}`);
+}
+
+/** `GET /api/metrics/summary`: all time, or the last `days` days. */
+export function getMetrics(days?: number): Promise<MetricsSummary> {
+  const query = days ? `?${new URLSearchParams({ days: String(days) }).toString()}` : "";
+  return request<MetricsSummary>(`/metrics/summary${query}`);
 }

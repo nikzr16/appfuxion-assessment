@@ -11,6 +11,7 @@ import {
   makeResult,
   makeRun,
   makeStep,
+  makeTrace,
 } from "../../test/fixtures.ts";
 import { renderApp } from "../../test/render.tsx";
 
@@ -23,6 +24,7 @@ function completedRoutes() {
     [`GET /documents/${DOC_ID}`]: ok(makeDocument()),
     [`GET /documents/${DOC_ID}/result`]: ok(makeResult()),
     [`GET /documents/${DOC_ID}/runs`]: ok([makeRun()]),
+    [`GET /documents/${DOC_ID}/trace`]: ok(makeTrace()),
     [`GET /documents/${DOC_ID}/text`]: ok({
       document_id: DOC_ID,
       raw_text: "INVOICE BL-88731",
@@ -50,6 +52,19 @@ describe("DocumentDetailPage — completed", () => {
       expect(screen.getByRole("region", { name: `${name}: Done` })).toBeInTheDocument();
     }
     expect(document.title).toBe("invoice.pdf · Document Intelligence");
+  });
+
+  it("shows the trace and the tokens each agent lane used", async () => {
+    mockApi(completedRoutes());
+    renderApp(PATH);
+
+    const trace = await screen.findByRole("region", { name: "Trace" });
+    expect(await within(trace).findByRole("list", { name: "Run timeline" })).toBeInTheDocument();
+    const extraction = screen.getByRole("region", { name: "Extraction Agent: Done" });
+    expect(within(extraction).getByText(/375 tokens · \$0\.0002/)).toBeInTheDocument();
+    const validation = screen.getByRole("region", { name: "Validation Agent: Done" });
+    expect(within(validation).queryByText(/tokens/)).not.toBeInTheDocument();
+    expect(screen.getByText(/4 turns · 1,500 tokens · \$0\.0010/)).toBeInTheDocument();
   });
 
   it("highlights the field, row and cell each issue points at", async () => {
@@ -147,6 +162,7 @@ describe("DocumentDetailPage — other states", () => {
       [`GET /documents/${DOC_ID}/runs`]: ok([
         makeRun({ status: "failed", steps: [makeStep({ status: "error", error: { code: "invalid_llm_output", message: "bad" } })] }),
       ]),
+      [`GET /documents/${DOC_ID}/trace`]: ok(makeTrace({ llm_calls_recorded: false, spans: [] })),
     });
     renderApp(PATH);
 

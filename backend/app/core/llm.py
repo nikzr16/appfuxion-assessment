@@ -7,6 +7,12 @@ OpenAI SDK, so tests swap in ``FakeLLM`` and never touch the network.
 Feature 0000 only fixes this seam: models come from config, token usage is captured on
 every response, and every call is logged. Prompt versions, structured-output helpers
 and agent loops are added by the features that need them.
+
+Feature 0007 measures every call here, in one place: each ``complete`` / ``embed`` call of
+every client (``FakeLLM`` included) logs one ``llm.call`` line and hands an
+``LLMCallRecord`` to the recorder registered with ``register_llm_recorder`` (the
+observability module's token ledger). Callers only label their calls with
+``app.core.logging.bind_trace(purpose=...)``.
 """
 
 import hashlib
@@ -14,20 +20,41 @@ import logging
 import math
 import time
 from collections import deque
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from enum import StrEnum
 from functools import lru_cache
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import openai
 from pydantic import BaseModel, ValidationError
 
 from app.core.config import Settings, get_settings
-from app.core.errors import LLMError, LLMOutputError
+from app.core.errors import AppError, LLMError, LLMOutputError
+from app.core.logging import TraceLabels, trace_labels
 
 logger = logging.getLogger(__name__)
 
 Message = Mapping[str, Any]
+
+
+class Purpose(StrEnum):
+    """What an LLM call is for (the ``purpose`` trace label, PRD 0007 D2)."""
+
+    VISION_TRANSCRIPTION = "vision_transcription"
+    STRUCTURED_EXTRACTION = "structured_extraction"
+    AGENT_LOOP = "agent_loop"
+    SUMMARY = "summary"
+    EMBEDDING = "embedding"
+    UNKNOWN = "unknown"
+
+
+class Agent(StrEnum):
+    """Which agent made an LLM call (the ``agent`` trace label). B4 adds more."""
+
+    DOCUMENT = "document"
 
 
 @dataclass(frozen=True)
@@ -73,6 +100,114 @@ class EmbeddingResponse:
     vectors: list[list[float]]
     usage: TokenUsage
     model: str
+
+
+# -- Recording (feature 0007) -----------------------------------------------------------
+
+CallKind = Literal["chat", "embedding"]
+
+
+@dataclass(frozen=True)
+class LLMCallRecord:
+    """One measured LLM call, success or failure. Never holds prompts or replies."""
+
+    kind: CallKind
+    model: str
+    usage: TokenUsage
+    latency_ms: int
+    status: Literal["ok", "error"]
+    error_code: str | None
+    started_at: datetime
+    labels: TraceLabels
+
+
+LLMRecorder = Callable[[LLMCallRecord], None]
+
+_recorder: LLMRecorder | None = None
+
+
+def register_llm_recorder(recorder: LLMRecorder | None) -> None:
+    """Install the function that stores each call record (``None`` stops recording)."""
+    global _recorder
+    _recorder = recorder
+
+
+class _Meter:
+    """Filled in by the measured block with what the response reported."""
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self.usage = TokenUsage()
+
+
+@contextmanager
+def _observe(kind: CallKind, model: str) -> Iterator[_Meter]:
+    """Time one call; on exit log ``llm.call`` and hand the record to the recorder.
+
+    Exceptions from the call are re-raised unchanged. Exceptions from the recorder are
+    logged and dropped: observability must never break a document run (PRD 0007 D5).
+    """
+    labels = trace_labels()
+    if labels.purpose is None:
+        if kind == "embedding":
+            labels = replace(labels, purpose=Purpose.EMBEDDING.value)
+        else:
+            labels = replace(labels, purpose=Purpose.UNKNOWN.value)
+            logger.warning("llm.call without purpose", extra={"purpose": labels.purpose})
+    meter = _Meter(model)
+    started_at = datetime.now(UTC)
+    started = time.perf_counter()
+    error: BaseException | None = None
+    try:
+        yield meter
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        error_code = None
+        if error is not None:
+            error_code = error.code if isinstance(error, AppError) else "internal_error"
+        record = LLMCallRecord(
+            kind=kind,
+            model=meter.model,
+            usage=meter.usage,
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            status="ok" if error is None else "error",
+            error_code=error_code,
+            started_at=started_at,
+            labels=labels,
+        )
+        _log_call(record, error)
+        _record(record)
+
+
+def _log_call(record: LLMCallRecord, error: BaseException | None) -> None:
+    """One line per call with the ledger's fields; never message contents (PRD 0007 D9)."""
+    fields: dict[str, Any] = {
+        "kind": record.kind,
+        "purpose": record.labels.purpose,  # the bound label wins when one is set
+        "model": record.model,
+        "prompt_tokens": record.usage.prompt_tokens,
+        "completion_tokens": record.usage.completion_tokens,
+        "latency_ms": record.latency_ms,
+        "status": record.status,
+    }
+    if error is None:
+        logger.info("llm.call", extra=fields)
+    else:
+        logger.error(
+            "llm.call", extra={**fields, "error_code": record.error_code, "error": str(error)}
+        )
+
+
+def _record(record: LLMCallRecord) -> None:
+    recorder = _recorder
+    if recorder is None:
+        return
+    try:
+        recorder(record)
+    except Exception:
+        logger.warning("llm.call not recorded", exc_info=True)
 
 
 class LLMClient(Protocol):
@@ -134,37 +269,26 @@ class OpenAILLMClient:
         if temperature is not None:
             kwargs["temperature"] = temperature
 
-        started = time.perf_counter()
-        try:
-            if response_format is not None:
-                completion = self._client.chat.completions.parse(
-                    response_format=response_format, **kwargs
-                )
-            else:
-                completion = self._client.chat.completions.create(**kwargs)
-        except openai.OpenAIError as exc:
-            logger.error("llm.complete failed", extra={"model": chosen, "error": str(exc)})
-            raise LLMError(f"OpenAI request failed: {exc}") from exc
-        except ValidationError as exc:  # the SDK parses structured replies with Pydantic
-            logger.warning(
-                "llm.complete invalid output", extra={"model": chosen, "errors": exc.error_count()}
-            )
-            raise _output_error(exc) from exc
+        with _observe("chat", chosen) as meter:
+            try:
+                if response_format is not None:
+                    completion = self._client.chat.completions.parse(
+                        response_format=response_format, **kwargs
+                    )
+                else:
+                    completion = self._client.chat.completions.create(**kwargs)
+            except openai.OpenAIError as exc:
+                raise LLMError(f"OpenAI request failed: {exc}") from exc
+            except ValidationError as exc:  # the SDK parses structured replies with Pydantic
+                raise _output_error(exc) from exc
+            usage = _usage_from(completion.usage)
+            meter.model = getattr(completion, "model", chosen)
+            meter.usage = usage
 
         message = completion.choices[0].message
-        usage = _usage_from(completion.usage)
         tool_calls = tuple(
             ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
             for tc in (getattr(message, "tool_calls", None) or [])
-        )
-        logger.info(
-            "llm.complete",
-            extra={
-                "model": chosen,
-                "prompt_tokens": usage.prompt_tokens,
-                "completion_tokens": usage.completion_tokens,
-                "duration_ms": round((time.perf_counter() - started) * 1000),
-            },
         )
         return LLMResponse(
             content=message.content,
@@ -177,23 +301,15 @@ class OpenAILLMClient:
 
     def embed(self, texts: Sequence[str], *, model: str | None = None) -> EmbeddingResponse:
         chosen = model or self._settings.openai_embedding_model
-        started = time.perf_counter()
-        try:
-            result = self._client.embeddings.create(model=chosen, input=list(texts))
-        except openai.OpenAIError as exc:
-            logger.error("llm.embed failed", extra={"model": chosen, "error": str(exc)})
-            raise LLMError(f"OpenAI embedding request failed: {exc}") from exc
+        with _observe("embedding", chosen) as meter:
+            try:
+                result = self._client.embeddings.create(model=chosen, input=list(texts))
+            except openai.OpenAIError as exc:
+                raise LLMError(f"OpenAI embedding request failed: {exc}") from exc
+            usage = _usage_from(result.usage)
+            meter.model = getattr(result, "model", chosen)
+            meter.usage = usage
 
-        usage = _usage_from(result.usage)
-        logger.info(
-            "llm.embed",
-            extra={
-                "model": chosen,
-                "prompt_tokens": usage.prompt_tokens,
-                "inputs": len(texts),
-                "duration_ms": round((time.perf_counter() - started) * 1000),
-            },
-        )
         return EmbeddingResponse(
             vectors=[list(item.embedding) for item in result.data],
             usage=usage,
@@ -283,37 +399,46 @@ class FakeLLM:
                 temperature=temperature,
             )
         )
+        # Measured like the real client, so tests exercise the ledger path (PRD 0007 D1).
+        with _observe("chat", model or self.model) as meter:
+            response = self._next_response(response_format)
+            meter.model = response.model
+            meter.usage = response.usage
+        self.total_usage = self.total_usage + response.usage
+        return response
+
+    def _next_response(self, response_format: type[BaseModel] | None) -> LLMResponse:
         if not self.replies:
             raise AssertionError("FakeLLM has no scripted replies left for this call.")
         reply = self.replies.popleft()
         if isinstance(reply, Exception):
             raise reply
         if isinstance(reply, LLMResponse):
-            response = reply
-        elif isinstance(reply, BaseModel):
-            response = LLMResponse(
+            return reply
+        if isinstance(reply, BaseModel):
+            return LLMResponse(
                 content=reply.model_dump_json(),
                 usage=self.usage,
                 model=self.model,
                 parsed=reply,
             )
-        else:
-            try:
-                parsed = response_format.model_validate_json(reply) if response_format else None
-            except ValidationError as exc:
-                raise _output_error(exc) from exc
-            response = LLMResponse(content=reply, usage=self.usage, model=self.model, parsed=parsed)
-        self.total_usage = self.total_usage + response.usage
-        return response
+        try:
+            parsed = response_format.model_validate_json(reply) if response_format else None
+        except ValidationError as exc:
+            raise _output_error(exc) from exc
+        return LLMResponse(content=reply, usage=self.usage, model=self.model, parsed=parsed)
 
     def embed(self, texts: Sequence[str], *, model: str | None = None) -> EmbeddingResponse:
         self.embed_calls.append(list(texts))
-        usage = TokenUsage(prompt_tokens=sum(len(t.split()) for t in texts))
+        chosen = model or self.model
+        with _observe("embedding", chosen) as meter:
+            usage = TokenUsage(prompt_tokens=sum(len(t.split()) for t in texts))
+            meter.usage = usage
         self.total_usage = self.total_usage + usage
         return EmbeddingResponse(
             vectors=[_fake_vector(t, self.embedding_dimensions) for t in texts],
             usage=usage,
-            model=model or self.model,
+            model=chosen,
         )
 
 

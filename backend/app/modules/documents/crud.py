@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -98,3 +99,11 @@ def restart_processing(db: Session, document_id: uuid.UUID) -> bool:
     )
     db.flush()
     return result.rowcount == 1
+
+
+def count_by_status(db: Session, *, since: datetime | None = None) -> dict[str, int]:
+    """Documents per status, optionally only those created since ``since``."""
+    query = select(Document.status, func.count()).group_by(Document.status)
+    if since is not None:
+        query = query.where(Document.created_at >= since)
+    return dict(db.execute(query).all())

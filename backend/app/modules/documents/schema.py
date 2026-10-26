@@ -64,3 +64,15 @@ class DocumentList(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class DocumentCounts(BaseModel):
+    """Documents per status (feature 0007 metrics)."""
+
+    processing: int
+    completed: int
+    failed: int
+
+    @property
+    def total(self) -> int:
+        return self.processing + self.completed + self.failed
