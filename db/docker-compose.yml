@@ -1,0 +1,35 @@
+# PostgreSQL 18 + pgvector on its own — for local development and tests.
+#
+#   docker compose --env-file .env -f db/docker-compose.yml up -d
+#
+# The root docker-compose.yml `include`s this file, so the full stack uses the same
+# service, container and volume.
+name: appfuxion
+
+services:
+  db:
+    image: pgvector/pgvector:pg18-trixie
+    container_name: appfuxion-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-appfuxion}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-appfuxion}
+      TZ: Asia/Kuala_Lumpur
+      PGTZ: Asia/Kuala_Lumpur
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql/<major>/docker, so the
+      # volume is mounted one level above the old /var/lib/postgresql/data path.
+      - appfuxion_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  appfuxion_pgdata:
+    name: appfuxion_pgdata

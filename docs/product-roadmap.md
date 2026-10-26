@@ -42,7 +42,7 @@ PRD yet; their numbers are expectations from the local feature map.
 
 | PRD | Module | Status | Notes |
 |---|---|---|---|
-| `docs/prd/0000-setup-prd.md` | `backend/app/core/`, `frontend/`, `db/`, CI | draft | Reserved number 0000 |
+| `docs/prd/0000-setup-prd.md` | `backend/app/core/`, `frontend/`, `db/`, CI | in-progress | Reserved number 0000; built and verified locally, awaiting first CI run |
 
 ### Phase 1: Core Pipeline (brief Parts 1–5)
 
@@ -103,7 +103,7 @@ PRD yet; their numbers are expectations from the local feature map.
 
 | PRD | Phase | Module | Status |
 |---|---|---|---|
-| `docs/prd/0000-setup-prd.md` | 0 | foundation | draft |
+| `docs/prd/0000-setup-prd.md` | 0 | foundation | in-progress |
 
 ## Prioritization Log
 

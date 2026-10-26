@@ -1,0 +1,54 @@
+# Full stack: PostgreSQL + pgvector, backend (FastAPI + agents), frontend (nginx).
+#
+#   cp .env.example .env      # then set OPENAI_API_KEY
+#   docker compose up --build
+#
+# Requires Docker Compose >= 2.24 (`include` with `env_file`).
+name: appfuxion
+
+include:
+  # The db service lives in its own file so it can also run alone for local dev.
+  - path: db/docker-compose.yml
+    env_file: .env
+
+services:
+  backend:
+    build: ./backend
+    container_name: appfuxion-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Container-specific values win over anything in .env.
+      POSTGRES_HOST: db
+      DB_PORT: "5432" # the db's internal port; DB_PORT in .env is only the host-side port
+      DATABASE_URL: "" # force derivation from POSTGRES_* so a local override can't leak in
+      STORAGE_DIR: /app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - appfuxion_uploads:/app/storage
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  frontend:
+    build: ./frontend
+    container_name: appfuxion-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+
+volumes:
+  appfuxion_uploads:
+    name: appfuxion_uploads
