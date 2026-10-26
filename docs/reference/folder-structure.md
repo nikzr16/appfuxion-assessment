@@ -13,10 +13,10 @@ current state; record the divergence in the decision log.
 
 ## Overview
 
-Structure of the Document Intelligence Agent repository as of feature `0003`
-(structured extraction): a FastAPI backend with shared core infrastructure, a `health` module,
-the `documents` upload module, the `text_extraction` module and the `structured_extraction`
-module, a Vite + React frontend skeleton, PostgreSQL + pgvector in Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
+Structure of the Document Intelligence Agent repository as of feature `0004`
+(validation): a FastAPI backend with shared core infrastructure, a `health` module,
+the `documents` upload module, the `text_extraction` module, the `structured_extraction`
+module and the pure `validation` module, a Vite + React frontend skeleton, PostgreSQL + pgvector in Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
 
 ## Directory Layout
 
@@ -37,7 +37,8 @@ module, a Vite + React frontend skeleton, PostgreSQL + pgvector in Docker, and C
 │   │       ├── health/             # router.py, service.py, schema.py
 │   │       ├── documents/          # model, crud, schema, service, router, pipeline (hook for 0005)
 │   │       ├── text_extraction/    # model, crud, schema, service, router, prompts (PDF parser + vision)
-│   │       └── structured_extraction/  # model, crud, schema (InvoiceData), service, router, prompts
+│   │       ├── structured_extraction/  # model, crud, schema (InvoiceData), service, router, prompts
+│   │       └── validation/         # pure: schema (report, issue codes), service (validate_invoice, convert_currency), currencies (data)
 │   ├── migrations/
 │   │   ├── env.py                  # URL from settings, metadata from app.models
 │   │   ├── script.py.mako
@@ -50,9 +51,10 @@ module, a Vite + React frontend skeleton, PostgreSQL + pgvector in Docker, and C
 │   │   ├── modules/documents/      # conftest (byte samples, pipeline spy), test_router, test_service
 │   │   ├── modules/text_extraction/  # conftest (make_document), samples (PDF/image builders), test_router, test_service
 │   │   ├── modules/structured_extraction/  # conftest (make_document with text, invoice()), test_schema, test_service, test_router
+│   │   ├── modules/validation/     # conftest (make_invoice(), line(), TODAY), test_validate_invoice, test_convert_currency, test_currencies, test_schema, test_layering
 │   │   └── test_app.py, test_config.py, test_migrations.py
 │   ├── alembic.ini
-│   ├── pyproject.toml              # deps (pdfplumber, pypdfium2, pillow; dev: reportlab), ruff, pytest config
+│   ├── pyproject.toml              # deps (pdfplumber, pypdfium2, pillow, pycountry; dev: reportlab), ruff, pytest config
 │   ├── uv.lock
 │   ├── .python-version             # 3.12
 │   ├── Dockerfile
@@ -111,6 +113,12 @@ forward `/api` to the backend.
 | `InvoiceData` (LLM output + 0004 input) | `structured_extraction` | `document_type`, `vendor`, `vendor_address`, `vendor_tax_id`, `customer_name`, `customer_address`, `invoice_number`, `invoice_date: date`, `due_date: date`, `payment_terms`, `currency` (3 upper-case letters), `subtotal`, `tax`, `total_amount` (`Decimal`), `line_items: LineItem[]`. Strict structured-output schema: every field required + nullable, `additionalProperties: false`, money as JSON `number`; blank text → null. In JSON (DB, API) money is a decimal string and dates are `YYYY-MM-DD` |
 | `ExtractionRead` (internal) | `structured_extraction` | every `extractions` column, `data: InvoiceData` |
 | `ExtractionResponse` | `structured_extraction` | `document_id: UUID`, `structured_data: InvoiceData`, `model`, `prompt_version`, `attempts` |
+| `Severity` | `validation` | `error` \| `warning` \| `info` |
+| `ValidationStatus` | `validation` | `pass` \| `warn` \| `fail` — any error → `fail`; else any warning → `warn`; else `pass` (info never counts) |
+| `IssueCode` | `validation` | stable catalogue, see "Validation issue codes" below |
+| `ValidationIssue` | `validation` | `field` (JSON path into `InvoiceData`, e.g. `line_items[2].amount`, 0-based), `code`, `severity`, `message` (sentence with the numbers), `expected` / `actual` (`Decimal \| null`, exact; set on the numeric issues) |
+| `ValidationReport` | `validation` | `status`, `issues: ValidationIssue[]` (fixed order); JSON money as decimal strings |
+| `ConversionResult` | `validation` | `original_amount`, `from_currency`, `to_currency`, `rate` (10 significant digits), `converted_amount` (half-up to target minor units), `rate_date: date`, `source` |
 | Error body | `core/errors.py` | `{"error": {"code": str, "message": str, "details"?: any}}` — used for `AppError`, framework HTTP errors (404/405) and request validation (422, `details` = field errors) |
 
 Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_type` (415),
@@ -121,7 +129,35 @@ Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_ty
 `unreadable_document` / `no_text_found` (422, `TextExtractionError`; raised by
 `text_extraction.service.extract_text`, never returned by the GET route), and
 `invalid_llm_output` / `llm_refused` (502, `StructuredExtractionError`; raised by
-`structured_extraction.service.extract_structured_data`).
+`structured_extraction.service.extract_structured_data`), and `unsupported_currency` /
+`invalid_amount` (422, `CurrencyConversionError`; raised by
+`validation.service.convert_currency`).
+
+### Validation issue codes
+
+Stable: codes may be added, never renamed. Severity is fixed per code except
+`missing_field`.
+
+| Code | Severity | Field | When |
+|---|---|---|---|
+| `missing_field` | by type (below) | the field | a required field is `null` / `line_items` empty |
+| `not_financial_document` | warning | `document_type` | `document_type = unknown`; no other check runs |
+| `invalid_currency` | error | `currency` | not an ISO 4217 code (via `pycountry`), or a metal / IMF / test code (`XAU`, `XDR`, `XTS`, `XXX`, …) |
+| `subtotal_tax_mismatch` | warning | `total_amount` | `subtotal + tax` (or `subtotal` without tax) differs from the total by more than one minor unit |
+| `tax_included` | info | `total_amount` | `subtotal` already equals the total although `tax` is set |
+| `line_items_sum_mismatch` | warning | `line_items` | Σ line amounts ≠ subtotal (or ≠ both total and total − tax without a subtotal) |
+| `line_items_incomplete` | info | `line_items` | a line has no amount, so the sum is not checked |
+| `line_amount_mismatch` | warning | `line_items[i].amount` | quantity × unit price ≠ amount |
+| `negative_amount` | warning | `subtotal` / `tax` / `total_amount` | a headline amount is negative (lines may be) |
+| `due_before_invoice` | error | `due_date` | due date before invoice date |
+| `date_in_future` | warning | `invoice_date` | more than 1 day after today |
+| `date_too_old` | info | `invoice_date` | more than 10 years before today |
+
+`missing_field` severity — invoice: `vendor`, `total_amount` error; `invoice_number`,
+`invoice_date`, `currency` warning; `due_date`, empty `line_items` info. Receipt: `vendor`,
+`total_amount` error; `invoice_date`, `currency` warning; empty `line_items` info. Tolerance
+for every comparison is one minor unit of the currency (JPY 1, MYR 0.01, KWD 0.001; 0.01
+when the currency is missing or invalid).
 
 ## Database
 
@@ -254,6 +290,14 @@ once with the validation errors fed back, commits its own row, never changes the
 status, and raises `StructuredExtractionError` / `LLMError` for the caller to turn into
 `failed`.
 
+Validation is pure (no DB, LLM or network):
+`validation.service.validate_invoice(data: InvoiceData, *, today=None) -> ValidationReport`
+never raises, and `validation.service.convert_currency(amount: Decimal, from_currency,
+to_currency) -> ConversionResult` uses the static rate snapshot in
+`validation/currencies.py` (25 currencies, USD base, `RATES_AS_OF` 2026-10-26, source
+ExchangeRate-API open access). `is_iso_currency(code)` and `minor_units(code)` are public
+helpers. Nothing calls them yet; the 0005 agent tools will.
+
 LLM seam: `LLMClient.complete(..., response_format=X)` returns `LLMResponse.parsed`; a reply
 that fails `X`'s validation raises `LLMOutputError` (both `OpenAILLMClient` and `FakeLLM`),
 and a refusal is returned as `LLMResponse.refusal` with `parsed=None`.
@@ -266,6 +310,12 @@ and a refusal is returned as `LLMResponse.refusal` with `parsed=None`.
 | `pypdfium2` | Rendering PDF pages to images for vision |
 | `pillow` | Image decode, EXIF rotation, resize, JPEG encode |
 | `reportlab` (dev only) | Test fixtures: text, mixed and password-protected PDFs |
+
+## Dependencies added in 0004
+
+| Package | Used for |
+|---|---|
+| `pycountry` | ISO 4217 currency code lookup (LGPL-2.1, no dependencies of its own) |
 
 ## Related Documents
 
@@ -283,3 +333,6 @@ and a refusal is returned as `LLMResponse.refusal` with `parsed=None`.
 | `docs/prd/0003-structured-extraction-prd.md` | Intent | Structured extraction goals and decisions (D1-D12) |
 | `docs/plan/0003-structured-extraction-plan.md` | Plan | Structured extraction implementation path |
 | `docs/decisions/0004-structured-extraction-implementation-divergences.md` | Decision log | 0003 structured extraction divergences |
+| `docs/prd/0004-validation-prd.md` | Intent | Validation goals and decisions (D1-D12) |
+| `docs/plan/0004-validation-plan.md` | Plan | Validation implementation path |
+| `docs/decisions/0005-validation-implementation-divergences.md` | Decision log | 0004 validation divergences |

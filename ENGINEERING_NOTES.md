@@ -135,6 +135,47 @@ feature number (`0000`, `0001`, ...).
   404 / 409 pattern as the text route. `model`, `prompt_version`, `attempts` and token counts
   are stored with each result.
 
+### 0004 - Validation
+
+- **Code does the maths.** `validate_invoice(InvoiceData) -> ValidationReport` is a pure
+  function: no database, network or LLM, and the same input (and `today`) always gives the
+  same report in the same order. It never raises; every problem is an issue
+  `{field, code, severity, message, expected, actual}`, so the agent always has something to
+  summarise. Messages are finished sentences that already contain the numbers ("Subtotal
+  100.00 + tax 6.00 = 106.00 MYR, but the total is 108.00 MYR (difference 2.00 MYR)"), so the
+  summary model only repeats them and never calculates.
+- **Three severities, one roll-up.** `error` (impossible or unusable: no vendor or total, a
+  currency that does not exist, a due date before the invoice date) → `fail`; `warning`
+  (probably wrong or incomplete) → `warn`; `info` (a note) never changes the status. Issue
+  codes are a stable catalogue (`docs/reference/folder-structure.md`) that the UI and the
+  summary prompt can rely on; `field` is a JSON path (`line_items[2].amount`) so the UI can
+  highlight one line.
+- **Arithmetic mismatches are warnings, not errors.** `InvoiceData` has no discount,
+  shipping or cash-rounding fields, so a correct invoice with "Shipping 15.00" in its totals
+  block would otherwise fail. Tax-inclusive layouts (subtotal already equals the total) pass
+  with an info note, which avoids a false warning on most Southeast Asian receipts. Every
+  comparison is exact `Decimal` arithmetic with a tolerance of one minor unit of the
+  document's currency (JPY 1, MYR 0.01, KWD 0.001).
+- **Lenient on what 0003 leaves empty on purpose.** A null date or currency is often 0003
+  being honest (an ambiguous `03/04/2025`, a bare `$`), so it is a warning with a hint, not a
+  fail. Receipts need no number or due date. An `unknown` document gets one warning and no
+  other checks.
+- **ISO 4217 via `pycountry`; minor units in a small table.** `pycountry` (LGPL-2.1, no
+  dependencies) answers "is this a real currency?"; its 178 codes matched the official ISO
+  list (published 2026-09-17) exactly. It has no minor units, so `currencies.py` lists the 26
+  currencies that differ from 2 decimal places, checked against the same list. Metals, IMF
+  units and test codes (`XAU`, `XDR`, `XTS`, `XXX`, …) are not valid invoice currencies.
+- **Static, dated conversion.** `convert_currency(amount, from, to)` uses a snapshot of 25
+  rates (the currencies 0003 can produce from a symbol), USD base, copied as `Decimal`
+  literals from ExchangeRate-API's open endpoint on 2026-10-26. The cross rate is exact; the
+  result is rounded half-up to the target's minor units and always carries `rate_date` and
+  `source`, so the user sees how old the rate is. Unsupported codes and non-finite amounts
+  raise `CurrencyConversionError` (422) with a reason the agent can read.
+- **A pure module.** `validation/` has `schema.py`, `service.py` and a data-only
+  `currencies.py`; no router, table or migration. It imports only
+  `structured_extraction.schema` (a test enforces this). The 0005 agent run will store the
+  report and expose it through the document result.
+
 ## 2. Prompt design
 
 _TODO per feature: prompt structure, versioning (`PROMPT_VERSION`), output schemas, and how
@@ -232,6 +273,21 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
   automatically; it must be re-extracted with `force=True` too (0005's reprocess does both).
 - Only one row per document is kept; earlier extractions are overwritten, not versioned.
 
+**0004 - Validation**
+- Exchange rates are a static snapshot dated 2026-10-26 (indicative mid-market rates from
+  ExchangeRate-API, not for settlement) and only 25 currencies convert; refreshing is a manual
+  code change.
+- `InvoiceData` has no discount, shipping or rounding-adjustment fields, so an invoice whose
+  totals block contains them gets a `subtotal_tax_mismatch` / `line_items_sum_mismatch`
+  warning even when it is correct (e.g. Malaysian cash rounding to 0.05). The message shows
+  the difference so a person can judge.
+- The tax-inclusive rule accepts `subtotal = total` whenever tax is set, so an invoice that
+  forgot to add its tax passes with only an info note.
+- Each document is checked against itself only: duplicates, vendor history and outliers come
+  with B3; whether a value really appears in the text comes with B2.
+- `today` is the server's local date; the 1-day slack on future dates covers time zones but
+  not a wrong server clock.
+
 ## 4. Production improvements
 
 _TODO per feature: what would change for production (auth, a real job queue, object
@@ -268,3 +324,13 @@ retries and rate-limit handling, database backups)._
   middle; route ambiguous dates to a human or a locale setting per customer instead of `null`.
 - Evaluate prompt changes against a labelled set of real invoices before bumping
   `PROMPT_VERSION`, and fall back to a stronger model when the retry also fails.
+
+**0004 - Validation**
+- Pull rates daily from a licensed provider (stored with their date) and convert at the
+  invoice date's rate, not today's; keep the static table only as an offline fallback.
+- Add `discount`, `shipping` and `rounding_adjustment` to `InvoiceData` so the totals check
+  can be exact and mismatches can become errors.
+- Make the rules configurable per customer or country (required fields, tolerance, cash
+  rounding such as MYR to 0.05, the too-old limit) instead of constants.
+- Validate tax rates against the vendor's country (e.g. SST 6% / 8%, GST 9%) and tax IDs
+  against their national formats.
