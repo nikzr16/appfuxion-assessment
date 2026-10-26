@@ -23,6 +23,8 @@ class StoredFile:
 class Storage(Protocol):
     def save(self, data: bytes, *, extension: str = "") -> StoredFile: ...
 
+    def save_as(self, name: str, data: bytes) -> StoredFile: ...
+
     def read(self, key: str) -> bytes: ...
 
     def exists(self, key: str) -> bool: ...
@@ -31,7 +33,11 @@ class Storage(Protocol):
 
 
 class LocalStorage:
-    """Stores files under ``root`` using generated names (never user-supplied ones)."""
+    """Stores files directly under ``root``.
+
+    ``save`` generates the name; ``save_as`` takes a caller-given (already cleaned) name and
+    never overwrites. Every key goes through the ``_path`` guard.
+    """
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root).resolve()
@@ -44,6 +50,19 @@ class LocalStorage:
         key = f"{uuid.uuid4().hex}.{ext}" if ext else uuid.uuid4().hex
         self._path(key).write_bytes(data)
         return StoredFile(key=key, size=len(data))
+
+    def save_as(self, name: str, data: bytes) -> StoredFile:
+        """Save under ``name``; raises ``FileExistsError`` instead of overwriting."""
+        path = self._path(name)
+        try:
+            with path.open("xb") as handle:
+                handle.write(data)
+        except FileExistsError:
+            raise
+        except BaseException:
+            path.unlink(missing_ok=True)  # do not leave a partial file behind
+            raise
+        return StoredFile(key=name, size=len(data))
 
     def read(self, key: str) -> bytes:
         path = self._path(key)

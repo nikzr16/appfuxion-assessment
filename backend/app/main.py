@@ -12,10 +12,12 @@ from fastapi import APIRouter, FastAPI
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging
+from app.modules.documents.router import router as documents_router
 from app.modules.health.router import router as health_router
 
 ROUTERS: list[APIRouter] = [
     health_router,
+    documents_router,
 ]
 
 

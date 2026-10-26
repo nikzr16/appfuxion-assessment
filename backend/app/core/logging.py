@@ -2,8 +2,8 @@
 
 Anything logged while a document is being processed carries its id automatically:
 
-    with bind_document_id("doc_123"):
-        logger.info("extracting text")   # -> {"...", "document_id": "doc_123"}
+    with bind_document_id("7f3e2b1a-4c5d-4e6f-8a9b-0c1d2e3f4a5b"):
+        logger.info("extracting text")   # -> {"...", "document_id": "7f3e2b1a-4c5d-..."}
 """
 
 import json
