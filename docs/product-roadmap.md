@@ -55,7 +55,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | `docs/prd/0002-text-extraction-prd.md` | `modules/text_extraction` | shipped | Part 2 — PDF parser + OpenAI vision; CI run #7 green (2026-10-26) |
 | `docs/prd/0003-structured-extraction-prd.md` | `modules/structured_extraction` | shipped | Part 3 — structured outputs; CI run #10 green (2026-10-26) |
 | `docs/prd/0004-validation-prd.md` | `modules/validation` | shipped | Part 5 — deterministic checks + static-rate conversion; CI run #13 green (2026-10-26) |
-| `docs/prd/0005-agent-prd.md` | `modules/agent` | in progress | Part 4 — Document Agent + AgentRunner; implemented on the feature branch, awaiting merge |
+| `docs/prd/0005-agent-prd.md` | `modules/agent` | shipped | Part 4 — Document Agent + AgentRunner; end-to-end upload → result; CI run #16 green (2026-10-27) |
 
 ### Phase 2: User Interface
 
@@ -108,7 +108,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | `docs/prd/0002-text-extraction-prd.md` | 1 | text_extraction | shipped |
 | `docs/prd/0003-structured-extraction-prd.md` | 1 | structured_extraction | shipped |
 | `docs/prd/0004-validation-prd.md` | 1 | validation | shipped |
-| `docs/prd/0005-agent-prd.md` | 1 | agent | in progress |
+| `docs/prd/0005-agent-prd.md` | 1 | agent | shipped |
 
 ## Prioritization Log
 
