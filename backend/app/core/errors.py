@@ -29,6 +29,13 @@ class NotFoundError(AppError):
     code = "not_found"
 
 
+class ConflictError(AppError):
+    """The resource exists but is not in a state that can answer the request."""
+
+    status_code = status.HTTP_409_CONFLICT
+    code = "conflict"
+
+
 class ValidationFailedError(AppError):
     status_code = 422
     code = "validation_failed"

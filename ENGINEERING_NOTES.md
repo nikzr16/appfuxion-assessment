@@ -60,10 +60,64 @@ feature number (`0000`, `0001`, ...).
   marks `completed` itself, so completion can be saved in the same transaction as its
   results; until 0005 the hook is a no-op and documents stay `processing`.
 
+### 0002 - Text extraction
+
+- **Two methods, chosen per document.** A PDF whose every page has a text layer is parsed
+  locally with `pdfplumber` (free, instant, exact). Everything else (JPG, PNG, scanned or
+  partly scanned PDFs) is rendered and transcribed by the OpenAI vision model. `method`,
+  `page_count`, `model` and `prompt_version` are stored with the text so a result can be
+  explained later. Only permissive licences (MIT / BSD / Apache / HPND) were used, so the
+  repo can be public: `pdfplumber`, `pypdfium2` and Pillow, all pure wheels with no system
+  packages. PyMuPDF (AGPL) and poppler were rejected for that reason.
+- **No-text-layer heuristic.** Per page, whitespace and pdfminer's `(cid:N)` glyph
+  placeholders are removed; the page "has text" when at least 20 characters remain. If any
+  page fails the check the whole document goes to vision. That is deliberately simple:
+  it catches scans, image-only pages and broken font encodings, and keeps `method` a single
+  value per document.
+- **Bounded cost.** At most `VISION_MAX_PAGES` (default 5) pages are sent; pages are
+  rendered at 200 DPI, EXIF-rotated, flattened to RGB (transparency goes onto white) and
+  downscaled to a 2048 px long side before being sent as JPEG with `detail: "high"`. One
+  call per page, temperature 0. Text-layer PDFs cost no LLM tokens at all.
+- **A plain service function, not a pipeline step.** `extract_text(db, storage, llm,
+  document_id, force=False)` is what the 0005 agent tool will call. It is idempotent (an
+  existing row is returned without any LLM call; `force=True` replaces it in place, and an
+  upsert on the unique `document_id` makes concurrent calls end with one row). It commits
+  its own row, so the text survives a later pipeline failure, and it ends the read
+  transaction before the slow vision calls so no connection is held open. It never changes
+  the document status; `run_pipeline` already marks the document `failed` when anything
+  raises.
+- **`GET /api/documents/{id}/text` is read-only.** It never extracts and never calls
+  OpenAI. No text yet gives a 409 (`text_not_ready` while processing, `text_unavailable`
+  with the document's error otherwise), which is distinct from the 404 of a wrong id.
+- **Cross-module access stays on the rules.** The module learns where the file is through
+  `documents.service.get_document_source` (a small internal DTO; the storage path is never in
+  the API) and reads bytes through `Storage`. An AST test guards against imports of
+  `documents.crud` / `documents.model`.
+- **Failures are errors, not empty rows.** An unopenable, corrupt or password-protected
+  file is `unreadable_document` and a document with no legible text is `no_text_found`
+  (both 422); an OpenAI failure stays `llm_error` (502). Nothing is saved, so the caller can
+  mark the document `failed` with a clear reason instead of feeding empty text to 0003.
+
 ## 2. Prompt design
 
 _TODO per feature: prompt structure, versioning (`PROMPT_VERSION`), output schemas, and how
 hallucination is prevented (fields absent from the document are `null`)._
+
+**0002 - Text extraction** (`app/modules/text_extraction/prompts.py`, `PROMPT_VERSION =
+"text_extraction.v1"`, stored on every vision row)
+- **Transcribe, never interpret.** The system prompt makes the model a "transcription
+  engine": copy every visible character exactly in reading order, keep line breaks, put each
+  table row on one line with cells separated by `" | "`, keep numbers, currency symbols and
+  punctuation as printed, and never summarise, translate, correct, reformat, describe
+  logos or add anything. Meaning (vendor, totals, `null` for missing fields) is left to 0003.
+- **One page per call, structured output.** The user message is `Transcribe page N of M.`
+  plus the page image. The reply is `PageTranscription {text, legible}` (all fields required,
+  as strict structured output needs), so there is no chatter like "Here is the text:" and an
+  unreadable page is an explicit `legible=false` with `text=""` rather than invented text.
+  `M` is the real page count even when the page cap applies. A reply that cannot be parsed
+  (refusal, malformed) is an `LLMError`.
+- **Deterministic settings.** Temperature 0 and the model from `OPENAI_VISION_MODEL`.
+  Bump `PROMPT_VERSION` on any prompt change so stored rows say which wording produced them.
 
 ## 3. Limitations
 
@@ -80,6 +134,23 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
   In Docker (Linux) names are matched exactly.
 - Until 0005 the pipeline is a no-op, so documents never leave `processing`.
 
+**0002 - Text extraction**
+- Only the first `VISION_MAX_PAGES` (5) pages of a scanned PDF are read; totals on later
+  pages are lost. The cap is configurable and logged as a warning when it applies.
+- A PDF that mixes text pages and scanned pages is sent to vision as a whole document, so
+  the text pages pay for vision too. A per-page hybrid would be cheaper but gives a mixed
+  `method`.
+- Vision can misread digits or drop a line. The text is not checked against the image here;
+  that is guarded later by the deterministic validation in 0004 and by grounding checks.
+- A broken font encoding can produce garbage that still has 20 or more characters and is
+  then trusted as `pdf_parser` text. `force=True` re-extracts it, but there is no automatic
+  re-extraction or per-page comparison.
+- Table structure is not extracted (rows are only kept on one line with `" | "` in vision
+  text); positions and bounding boxes are out of scope.
+- `reportlab` is a dev-only dependency used to build test PDFs; the production image does
+  not contain it.
+- No extraction runs on upload until 0005; the text endpoint answers 409 until then.
+
 ## 4. Production improvements
 
 _TODO per feature: what would change for production (auth, a real job queue, object
@@ -93,3 +164,13 @@ retries and rate-limit handling, database backups)._
   documents stuck in `processing`.
 - Scan uploads for malware and sanitise PDFs before parsing; add auth and per-user
   ownership of documents.
+
+**0002 - Text extraction**
+- Move PDF parsing and rendering into a worker with a CPU / time limit (and a page-count
+  limit before rendering) so a hostile PDF cannot stall the API process; sandbox the parsers.
+- Add a cheap quality check on parsed text (language / garbage ratio) and a per-page hybrid
+  that sends only the scanned pages to vision.
+- Cache and de-duplicate by file hash so identical uploads reuse one extraction; track
+  vision token cost per document and alert on spend.
+- Retry vision pages with backoff and a fallback model, and allow resuming a partly
+  transcribed document instead of starting over.

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
 from app.core.config import BACKEND_DIR, Settings, build_database_url
@@ -21,6 +22,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "POSTGRES_HOST",
         "DB_PORT",
         "STORAGE_DIR",
+        "VISION_MAX_PAGES",
         "OPENAI_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -74,3 +76,17 @@ def test_relative_storage_dir_resolves_against_backend_dir() -> None:
     assert make_settings(storage_dir="./storage").storage_path == BACKEND_DIR / "storage"
     absolute = Path(BACKEND_DIR.anchor) / "data" / "uploads"
     assert make_settings(storage_dir=str(absolute)).storage_path == absolute
+
+
+def test_vision_max_pages_defaults_to_five_and_reads_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert make_settings().vision_max_pages == 5
+    monkeypatch.setenv("VISION_MAX_PAGES", "3")
+    assert make_settings().vision_max_pages == 3
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_vision_max_pages_must_be_at_least_one(value: int) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(vision_max_pages=value)
