@@ -73,7 +73,7 @@ PRD yet; their numbers are expectations from the local feature map.
 
 | PRD | Module | Status | Notes |
 |---|---|---|---|
-| `docs/prd/0007-observability-prd.md` | `modules/observability` | in progress | B1 — token ledger, traces, metrics; first, so later features get traces/tokens |
+| `docs/prd/0007-observability-prd.md` | `modules/observability` | shipped | B1 — token ledger, traces, metrics; CI run #24 green (2026-10-27) |
 | *planned* 0008 | `modules/guardrails` | planned | B2 — grounding, confidence, retry |
 | *planned* 0009 | `modules/vision` | planned | B5 — tables, layout, multimodal |
 | *planned* 0010 | `modules/retrieval` + Query Agent | planned | B3 — pgvector |
@@ -110,7 +110,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | `docs/prd/0004-validation-prd.md` | 1 | validation | shipped |
 | `docs/prd/0005-agent-prd.md` | 1 | agent | shipped |
 | `docs/prd/0006-frontend-prd.md` | 2 | frontend | shipped |
-| `docs/prd/0007-observability-prd.md` | 3 | observability | in progress |
+| `docs/prd/0007-observability-prd.md` | 3 | observability | shipped |
 
 ## Prioritization Log
 
