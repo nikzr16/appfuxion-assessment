@@ -2,6 +2,7 @@ import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
+import { formatTimestamp } from "../../lib/format.ts";
 import { mockApi, ok } from "../../test/fetchMock.ts";
 import { makeDocument } from "../../test/fixtures.ts";
 import { renderApp } from "../../test/render.tsx";
@@ -33,7 +34,8 @@ describe("DocumentsPage", () => {
     expect(screen.getAllByText("v2")).not.toHaveLength(0);
     expect(screen.getAllByText("Failed").length).toBeGreaterThan(1);
     expect(screen.getAllByText("no_text_found: No readable text was found.")).not.toHaveLength(0);
-    expect(screen.getAllByText(/^27-10-2026 \d\d:\d\d$/)).not.toHaveLength(0);
+    // Local time of the runner, so the test passes in any time zone.
+    expect(screen.getAllByText(formatTimestamp(makeDocument().created_at))).not.toHaveLength(0);
     expect(screen.getAllByRole("link", { name: /invoice\.pdf/ })[0]).toHaveAttribute("href", "/documents/a");
   });
 
