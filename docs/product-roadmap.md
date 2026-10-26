@@ -19,64 +19,99 @@ cross-feature ordering logic. Do not duplicate PRD content here.
 
 ## Product Vision
 
-_One to three sentences describing the long-term direction of the product._
+A Document Intelligence Agent that turns an uploaded invoice or receipt into validated,
+structured data and a trustworthy AI summary — built with production-style engineering
+(tests, CI, Docker, observability, guardrails) and AI agents that call real tools.
 
 ## Phasing Strategy
 
-_How phases are defined: by user base milestones, capability tiers, infrastructure readiness, or a combination. Explain the graduation logic._
+Phases follow the assessment brief's dependency chain: foundation first, then the five
+core parts in dependency order (the validation tool before the agent that calls it), then
+the UI, then the bonus tasks, then a submission pass. A phase graduates when every PRD in
+it is `shipped` (acceptance criteria met, CI green, merged into `dev`).
+
+Module numbers are assigned only when a feature starts. Rows marked *planned* have no
+PRD yet; their numbers are expectations from the local feature map.
 
 ## Phases
 
-### Phase 1: [Name]
+### Phase 0: Foundation
 
-**Trigger:** _What starts this phase (e.g. project kickoff, first deployment)._
-**Graduation criteria:** _What must be true before moving to Phase 2._
-
-| PRD | Module | Status | Notes |
-|---|---|---|---|
-| `docs/[feature]-prd.md` | `src/[module]/` | draft / in-progress / shipped | |
-
-### Phase 2: [Name]
-
-**Trigger:** _What starts this phase (e.g. Phase 1 shipped, N active users)._
-**Graduation criteria:** _What must be true before moving to Phase 3._
+**Trigger:** Project kickoff.
+**Graduation criteria:** `docker compose up --build` starts db + backend + frontend; CI green; migrations enable pgvector.
 
 | PRD | Module | Status | Notes |
 |---|---|---|---|
-| | | | |
+| `docs/prd/0000-setup-prd.md` | `backend/app/core/`, `frontend/`, `db/`, CI | draft | Reserved number 0000 |
 
-### Phase 3: [Name]
+### Phase 1: Core Pipeline (brief Parts 1–5)
 
-**Trigger:** _What starts this phase._
-**Graduation criteria:** _What must be true before moving to Phase 4._
+**Trigger:** Phase 0 shipped.
+**Graduation criteria:** Uploading a sample invoice returns `{document_id, structured_data, validation, summary}` end to end, with validation run before the summary.
 
 | PRD | Module | Status | Notes |
 |---|---|---|---|
-| | | | |
+| *planned* 0001 | `modules/documents` | planned | Part 1 — upload API |
+| *planned* 0002 | `modules/text_extraction` | planned | Part 2 — PDF parser + OpenAI vision |
+| *planned* 0003 | `modules/structured_extraction` | planned | Part 3 — structured outputs |
+| *planned* 0004 | `modules/validation` | planned | Part 5 — built before Part 4 (agent needs the tool) |
+| *planned* 0005 | `modules/agent` | planned | Part 4 — Document Agent + AgentRunner |
+
+### Phase 2: User Interface
+
+**Trigger:** 0005 API contract stable.
+**Graduation criteria:** Upload, status, and results (data, validation, summary) usable in the browser.
+
+| PRD | Module | Status | Notes |
+|---|---|---|---|
+| *planned* 0006 | `frontend/` | planned | |
+
+### Phase 3: Bonus Tasks
+
+**Trigger:** Phase 1 shipped (Phase 2 may run alongside).
+**Graduation criteria:** All five bonus tasks shipped; `AGENT_MODE=multi` is the default.
+
+| PRD | Module | Status | Notes |
+|---|---|---|---|
+| *planned* 0007 | `modules/observability` | planned | B1 — first, so later features get traces/tokens |
+| *planned* 0008 | `modules/guardrails` | planned | B2 — grounding, confidence, retry |
+| *planned* 0009 | `modules/vision` | planned | B5 — tables, layout, multimodal |
+| *planned* 0010 | `modules/retrieval` + Query Agent | planned | B3 — pgvector |
+| *planned* 0011 | `modules/agent` (multi-agent) | planned | B4 — last, reuses every tool |
+
+### Phase 4: Submission
+
+**Trigger:** Phases 1–3 shipped.
+**Graduation criteria:** README setup works from a clean clone; ENGINEERING_NOTES covers architecture, prompt design, limitations, production improvements; repo public.
+
+| PRD | Module | Status | Notes |
+|---|---|---|---|
+| — | `README.md`, `ENGINEERING_NOTES.md` | planned | Docs pass; may not need its own PRD |
 
 ## Cross-Cutting Concerns
 
-_Capabilities that span multiple phases rather than belonging to a single PRD (e.g. auth, observability, CI/CD, infrastructure). Track their progression here._
-
 | Concern | Introduced In | Matured In | Current State |
 |---|---|---|---|
-| | | | |
+| Docker Compose (full stack) | 0000 | 0006 | planned |
+| CI (GitHub Actions) | 0000 | each feature | planned |
+| LLM client (tokens, fakes, retries) | 0000 | 0007, 0008 | planned |
+| Persistence (Postgres + pgvector, Alembic) | 0000 | 0010 | planned |
+| Observability | 0000 (logging) | 0007 | planned |
+| ENGINEERING_NOTES.md | 0000 (stub) | every feature | planned |
 
 ## PRD Registry
 
-_Master list of all PRDs and their phase assignment. Duplicates the per-phase tables into one flat view for quick lookup._
-
 | PRD | Phase | Module | Status |
 |---|---|---|---|
-| | | | |
+| `docs/prd/0000-setup-prd.md` | 0 | foundation | draft |
 
 ## Prioritization Log
 
-_When a feature moves between phases or priorities shift, record the change and reasoning here. Entries are append-only._
-
 | Date | Change | Reason |
 |---|---|---|
-| | | |
+| 2026-10-26 | Validation (brief Part 5) ordered before the agent (Part 4) | The agent must call the validation tool before summarizing |
+| 2026-10-26 | Observability first among bonus tasks; multi-agent last | Observability benefits every later feature; multi-agent reuses all tools |
+| 2026-10-26 | SQLite replaced by Postgres 18 + pgvector in Docker | User preference; also serves the RAG bonus without a separate vector store |
 
 ## Related Documents
 
@@ -85,3 +120,4 @@ _When a feature moves between phases or priorities shift, record the change and 
 | `docs/documentation-standard.md` | Standard | Governs how all docs are maintained |
 | `docs/reference/folder-structure.md` | Reference | Structural placement of modules |
 | `docs/decisions/NNNN-*.md` | Decision log | Deviations that may affect roadmap |
+| `docs/prd/source/feature-map.md` | Local guideline (gitignored) | Build order and dependencies from the brief |
