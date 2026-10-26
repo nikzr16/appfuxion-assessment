@@ -5,7 +5,6 @@ from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, T
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
-from app.modules.text_extraction.schema import ExtractionMethod
 
 
 class DocumentText(Base):
@@ -21,7 +20,7 @@ class DocumentText(Base):
         Uuid, ForeignKey("documents.id", ondelete="CASCADE"), unique=True
     )
     raw_text: Mapped[str] = mapped_column(Text)
-    method: Mapped[str] = mapped_column(String(20), default=ExtractionMethod.PDF_PARSER.value)
+    method: Mapped[str] = mapped_column(String(20))
     page_count: Mapped[int] = mapped_column(Integer)
     # The vision model and prompt version; both are null for ``pdf_parser`` rows.
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)

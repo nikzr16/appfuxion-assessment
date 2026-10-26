@@ -150,6 +150,8 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
 - `reportlab` is a dev-only dependency used to build test PDFs; the production image does
   not contain it.
 - No extraction runs on upload until 0005; the text endpoint answers 409 until then.
+- pypdfium2 (PDF rendering) is not thread-safe. Background tasks run in a thread pool, so
+  0005 must serialise rendering (a lock) if several extractions can run at once.
 
 ## 4. Production improvements
 

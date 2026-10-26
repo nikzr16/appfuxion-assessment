@@ -379,6 +379,17 @@ def test_all_pages_illegible_is_no_text_found(
     _assert_nothing_saved(db_session, document_id)
 
 
+def test_nul_characters_are_removed_before_saving(
+    db_session: Session, storage: LocalStorage, fake_llm: FakeLLM, make_document: MakeDocument
+) -> None:
+    document_id = make_document(PNG, samples.png_invoice())
+    fake_llm.queue(_page("INVOICE\x00 INV-001"))
+
+    result = service.extract_text(db_session, storage, fake_llm, document_id)
+
+    assert result.raw_text == "INVOICE INV-001"
+
+
 def test_blank_legible_text_is_no_text_found(
     db_session: Session, storage: LocalStorage, fake_llm: FakeLLM, make_document: MakeDocument
 ) -> None:

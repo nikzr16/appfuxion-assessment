@@ -231,10 +231,12 @@ def extract_text(
         else:
             result = _extract_pdf(data, llm)
 
-        if not any(page.strip() for page in result.pages):
+        # Postgres text columns reject NUL, which broken PDFs and models can emit.
+        pages = [page.replace("\x00", "") for page in result.pages]
+        if not any(page.strip() for page in pages):
             raise TextExtractionError("No readable text was found.", code="no_text_found")
 
-        raw_text = _join_pages(result.pages, result.page_count)
+        raw_text = _join_pages(pages, result.page_count)
         row = crud.upsert(
             db,
             values={
@@ -255,7 +257,7 @@ def extract_text(
             extra={
                 "method": result.method.value,
                 "page_count": result.page_count,
-                "pages_sent": len(result.pages),
+                "pages_sent": len(pages),
                 "chars": len(raw_text),
                 "duration_ms": round((time.perf_counter() - started) * 1000),
             },

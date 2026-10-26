@@ -65,6 +65,13 @@ codes, the table or the PRD's decisions D1-D9.
     corrupt PNG / JPEG uploads.
 13. **README not changed.** It does not list endpoints or setup that changed (the text
     route answers 409 until 0005 wires extraction, so there is nothing to demonstrate yet).
+14. **NUL characters are stripped from page texts before saving (addition, from review).**
+    Postgres `TEXT` rejects `\x00`, which broken PDF text layers or a model reply can contain;
+    without this the insert would fail with a 500 instead of saving the readable text.
+15. **The vision page-cap warning is logged in `_extract_pdf`**, not `_render_pages`: it is the
+    caller that knows both the real page count and the cap.
+16. **An unusable vision reply is detected with `isinstance(parsed, PageTranscription)`**
+    rather than `parsed is None`, which also rejects a reply parsed into an unexpected type.
 
 ## Reason
 
