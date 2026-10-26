@@ -1,0 +1,18 @@
+{
+    "env": {
+      "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "26384"
+    },
+    "hooks": {
+      "SessionStart": [
+        {
+          "matcher": "startup",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python .claude/hooks/session_start.py"
+            }
+          ]
+        }
+      ]
+    }
+}

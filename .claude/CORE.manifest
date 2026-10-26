@@ -1,0 +1,20 @@
+# CORE.manifest - checksums of the reusable harness core. DO NOT edit by hand.
+# Regenerate (harness maintainers only) with:
+#   python .claude/skills/validate-config/scripts/validate_config.py --update-core-manifest
+# Format: <sha256>  <relpath-from-.claude>
+
+0e15afb598a7f51d5588d66f0a760d3b26bad4d54c65231ad74410258d326b79  agents/orchestrator.md
+719d8edf4e452bf82175011b951118d686fc9936b906f1b42849c6a6835f8fb9  agents/executor.md
+27273a98aaaaedad09a1d9be04b90995d2748cfcfcee7432fa58330894d073c4  agents/workflow-author.md
+3551ea0e50f2ad656bb01646b07bb2b134f584fe996f320a7926c18ca3c5a077  agents/mcp-connector.md
+ffd44cb368266995eff5b0b85dc0b9410c55cfd99ac5f28f250da664ecd229b2  skills/analyze-requirements/SKILL.md
+35f73d71e7db74ab3ae140f89ebdfb300129641147136a10b21572d2e35eb93c  skills/author-workflow/SKILL.md
+39bff92cf5b6e9b9c217161b9cb23b603954f3ba7157f14c37dc2dd1c4e8ec9e  skills/execute-plan/SKILL.md
+22a71ff01e7422fadb8eb08355f07c0e342bbe4b1d9c69fac33c3f5487bdfa8a  skills/generate-workflow/SKILL.md
+1829f83c885665adcb073690ac88d552ea59b928f3571f10689563b3167b5315  skills/mcp-connector/SKILL.md
+b05e42279790c56a129b7f11a8e2d2d1bd50699551dcb728cbe91e080f5899b5  skills/validate-config/SKILL.md
+36b1b195f4d2d851c9d284ca0bdbb1e7c0c1ac39ed0173bcde887a1243647841  skills/validate-config/scripts/validate_config.py
+1b63923984962afb0feeab219448c2b1807774e4f4d652ea2f341600661799d9  workflows/_template.yml
+1495b5b04d168b0f05e6ef452c30f5fa750bc49d2b0effe84797ee8fcbb9e99a  workflows/README.md
+ef2044f42e3ce1597d8cd68c4a9317ed7567bbbce118630a6c5dec1fb634f40f  GLOSSARY.md
+7c9490cb362fb0dbaf275ff73d4cdfc843161143d0fc2c89cd5e32bacbeffa81  hooks/session_start.py

@@ -1,0 +1,58 @@
+# _template.yml — copy this to `.claude/workflows/{id}.yml` to author a new workflow.
+# ("workflow" is the canonical noun; see .claude/GLOSSARY.md.)
+# Files prefixed `_` are NON-ROUTABLE: the orchestrator and validator skip them,
+# so this template never needs its agents/skills to exist.
+#
+# After copying: fill in `match` + `steps`, run the validator on the new file,
+# then add an `enabled` route to `registry.yml` (see the author-workflow skill).
+
+name: Example Workflow
+description: One-line summary of what this workflow accomplishes.
+
+# How the orchestrator routes to this workflow (keyword overlap; higher priority wins ties).
+match:
+  intent: [example, sample, keyword]
+  priority: 10
+
+steps:
+  # An agent step (type defaults to `agent`): spawn `agent`, optionally using `skill`.
+  # `executor` is the generic worker that ships with the harness; replace it with
+  # your own domain-specific agents (added under .claude/agents/) as needed.
+  - id: first
+    type: agent                 # optional; `agent` is the default step type
+    agent: executor             # must be an existing agent under .claude/agents/
+    skill: execute-plan         # optional; must be an existing skill under .claude/skills/
+    action: Do the first thing.
+    output: "docs/plans/adhoc-{slug}-output.md"
+    mandatory: true             # set false to let the fast lane skip this step
+
+  # A manual step: the orchestrator pauses and escalates to the user (no agent).
+  - id: approve
+    type: manual
+    requires: [first]
+    action: Ask the user to approve before continuing.
+
+  # A gated step: `on_complete` REQUIRES a `verdict_contract` (the exact tokens
+  # the step's agent emits on its final `VERDICT: <token>` line) and `max_retries`.
+  # Use runtime verdicts to skip expensive follow-ups when no work changed.
+  - id: review
+    agent: executor
+    action: Review the output of `first`. Emit VERDICT APPROVE when follow-up is not needed, or REVISE when `first` must run again.
+    requires: [first]
+    verdict_contract: ["APPROVE", "REVISE"]
+    max_retries: 2
+    on_complete:
+      APPROVE: { next: done }
+      REVISE: { next: first }
+
+  # Common conditional patterns:
+  # - generation/sync steps: ["CHANGED", "NOOP", "BLOCK"]
+  # - preflight gates: ["PASS", "WARN", "BLOCK"]
+  # Route `NOOP`, clean `PASS`, or unrecoverable `BLOCK` to `done` when no
+  # additional workflow step should run.
+
+  # Independent steps can run together via `parallel_with`.
+  - id: done
+    agent: executor
+    action: Finalize once review approves.
+    requires: [review]

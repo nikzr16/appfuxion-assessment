@@ -1,0 +1,19 @@
+# Workflow Registry — routing source of truth for the orchestrator.
+# The orchestrator reads ONLY this file to choose a route, then loads the one
+# matching workflow YAML. Files prefixed `_` are non-routable and never listed here.
+name: Workflow Registry
+version: "1.0"
+fallback: adhoc
+
+# No concrete workflows yet — every request uses the built-in, domain-agnostic
+# ad-hoc route (executor -> executor self-review).
+#
+# Add a workflow with the workflow-author agent, or by hand: copy `_template.yml`
+# to `.claude/workflows/{id}.yml`, then append a route below, e.g.
+#
+#   - id: my-workflow
+#     workflow: my-workflow.yml
+#     description: What this workflow does
+#     match: { intent: [keyword, another-keyword], priority: 50 }
+#     enabled: true
+routes: []

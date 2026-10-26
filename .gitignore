@@ -1,0 +1,23 @@
+# ── Environment ───────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ── Node ──────────────────────────────────────────────────────────────────────
+node_modules/
+dist/
+
+# ── Editors / tool caches ─────────────────────────────────────────────────────
+.cursor/
+.pytest_cache/
+.ruff_cache/
+.claude/settings.local.json
+
+# ── Assessment brief (confidential, do not commit) ────────────────────────────
+docs/prd/source/*.pdf
