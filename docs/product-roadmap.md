@@ -64,7 +64,7 @@ PRD yet; their numbers are expectations from the local feature map.
 
 | PRD | Module | Status | Notes |
 |---|---|---|---|
-| `docs/prd/0006-frontend-prd.md` | `frontend/` | in progress | Upload, documents list, document detail + multi-agent view; implemented on the feature branch, awaiting merge |
+| `docs/prd/0006-frontend-prd.md` | `frontend/` | shipped | Upload, documents list, document detail + multi-agent view; CI run #20 green (2026-10-27) |
 
 ### Phase 3: Bonus Tasks
 
@@ -109,7 +109,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | `docs/prd/0003-structured-extraction-prd.md` | 1 | structured_extraction | shipped |
 | `docs/prd/0004-validation-prd.md` | 1 | validation | shipped |
 | `docs/prd/0005-agent-prd.md` | 1 | agent | shipped |
-| `docs/prd/0006-frontend-prd.md` | 2 | frontend | in progress |
+| `docs/prd/0006-frontend-prd.md` | 2 | frontend | shipped |
 
 ## Prioritization Log
 
