@@ -228,6 +228,51 @@ feature number (`0000`, `0001`, ...).
 - **`AGENT_MODE` stays `multi`.** The default is the finished product's mode; until B4 ships,
   `multi` logs a warning and runs the single Document Agent, and the run records `single`.
 
+### 0006 - Frontend (web UI)
+
+- **Three pages, real URLs.** `react-router` serves Upload (`/`), Documents (`/documents`,
+  filter and page in the query string) and Document detail (`/documents/:id`). nginx already
+  falls back to `index.html`, so deep links and reloads work in Docker as in dev.
+- **One typed client, one cache.** Every request goes through `frontend/src/api/client.ts`
+  (types in `api/types.ts` mirror the backend DTOs); components read data only through the
+  TanStack Query hooks in `api/queries.ts`. A failed `fetch` becomes `ApiError(0,
+  "network_error")`, so the UI handles one error type. Only network errors and 5xx answers are
+  retried; 4xx answers are final.
+- **Polling, not push.** A processing document is re-read every 10 s (`POLL_INTERVAL_MS`),
+  together with its runs, so the agent's steps appear live. Polling stops on `completed` /
+  `failed` (then the result is fetched once) and pauses while the tab is hidden (TanStack
+  Query's focus manager); the list polls only while a visible row is processing.
+  `409 result_not_ready` is treated as a state, never shown as an error.
+- **Money stays a string.** Amounts are formatted from the decimal strings with string
+  operations only (grouping, padding to the currency's minor units from
+  `Intl.NumberFormat().resolvedOptions()`), so no float error can appear and printed precision
+  (e.g. a 4-decimal unit price) is never rounded. Dates are split from `YYYY-MM-DD` to
+  `DD-MM-YYYY` without `Date`, so no time-zone shift.
+- **Validation issues land on the data.** 0004's issue paths (`total_amount`,
+  `line_items[2].amount`, `line_items`) are parsed once (`lib/issues.ts`) into field / line /
+  cell / table targets; fields get a severity outline, line rows a tint, cells an outline, and
+  each issue in the list scrolls to its target.
+- **Multi-agent view on today's API.** `lib/agents.ts` groups a run's tool steps into the
+  three roles of the agent design (Extraction → Validation → Reporting) and derives each
+  lane's status (waiting / working / done / failed / not reached). In single mode one Document
+  Agent plays all three roles and the view says so; when B4 adds real agents only the
+  step-to-role mapping changes.
+- **Upload limits from the backend.** A small `client_config` module serves `GET /api/config`
+  (`max_upload_mb`, `accepted_content_types`, `base_currency`) from the same settings and type
+  list the upload service enforces, so the UI's checks follow `.env` without a rebuild; the UI
+  falls back to 10 MB / PDF, JPEG, PNG if the call fails, and the server always re-checks.
+  Up to 5 files are queued and sent as separate `POST /documents` requests, two at a time.
+- **Design system in Tailwind only.** Semantic colour tokens are CSS variables redefined under
+  `.dark` and exposed with `@theme inline`, so each component is styled once for both themes.
+  The theme follows the system unless the header toggle chooses light or dark (kept in
+  `localStorage`); an inline script applies it before first paint. Poppins is self-hosted
+  (Latin subset, `@fontsource/poppins`) and icons come from `lucide-react`; no component
+  library.
+- **Accessibility basics.** The drop zone is a labelled, keyboard-focusable file input; status
+  and severity always pair colour with an icon and text; a polite live region announces
+  uploads and status changes; focus moves to the page heading after navigation; the confirm
+  dialog is the native `<dialog>` (focus trap, Escape).
+
 ## 2. Prompt design
 
 _TODO per feature: prompt structure, versioning (`PROMPT_VERSION`), output schemas, and how
@@ -379,6 +424,17 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
 - `AGENT_MODE=multi` does not run a multi-agent pipeline yet (B4); it runs the single agent
   with a warning.
 
+**0006 - Frontend**
+- Status is polled every 10 s, so a finished document can take up to 10 s to show; there is
+  no server push (SSE / WebSocket).
+- Uploads use `fetch`, which reports no upload progress, so a file shows "Uploading" rather
+  than a percentage (small files make this rarely noticeable).
+- No end-to-end browser tests in CI: pages are tested with Vitest + Testing Library against a
+  stubbed `fetch`, and the full flow was checked by hand against a running backend.
+- The documents list has no search or sort, and documents cannot be deleted or edited from
+  the UI (no API for either). The UI has no login.
+- Light and dark were checked by eye for contrast, not with an automated accessibility audit.
+
 ## 4. Production improvements
 
 _TODO per feature: what would change for production (auth, a real job queue, object
@@ -437,3 +493,14 @@ retries and rate-limit handling, database backups)._
   making mistakes, keeping the LLM for the decisions and the summary; cache results by file
   hash so identical uploads do not re-run the agent.
 - Convert at the invoice date's rate and let each customer choose its base currency.
+
+**0006 - Frontend**
+- Push status changes with Server-Sent Events from the agent run instead of polling, and show
+  upload progress (XHR or a resumable upload protocol for large scans).
+- Add Playwright end-to-end tests (upload → processing → result) against a seeded backend with
+  the FakeLLM, plus an automated accessibility audit (axe) in CI.
+- Show the original file next to the extracted data (PDF / image preview with the matched
+  values highlighted), and let users correct a value and re-validate.
+- Add search, sorting and date filters to the list, server-side counts per status for the
+  tabs, and authentication with per-user documents.
+- Ship error monitoring (e.g. Sentry) and web-vitals reporting for the UI.

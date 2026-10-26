@@ -1,32 +1,38 @@
 import { useEffect, useState } from "react";
 
 import { getHealth, type HealthResponse } from "../api/client.ts";
+import { cx } from "../lib/cx.ts";
 
 type State =
   | { kind: "loading" }
   | { kind: "ready"; health: HealthResponse }
   | { kind: "unreachable" };
 
-const STYLES = {
-  loading: "bg-slate-100 text-slate-600 ring-slate-300",
-  ok: "bg-emerald-50 text-emerald-700 ring-emerald-300",
-  degraded: "bg-amber-50 text-amber-800 ring-amber-300",
-  unreachable: "bg-red-50 text-red-700 ring-red-300",
+const DOTS = {
+  loading: "bg-fg-subtle animate-pulse",
+  ok: "bg-success",
+  degraded: "bg-warning",
+  unreachable: "bg-danger",
 } as const;
 
-function describe(state: State): { style: keyof typeof STYLES; label: string } {
+function describe(state: State): { dot: keyof typeof DOTS; label: string; detail: string } {
   switch (state.kind) {
     case "loading":
-      return { style: "loading", label: "Checking backend..." };
+      return { dot: "loading", label: "Checking…", detail: "Checking the backend" };
     case "unreachable":
-      return { style: "unreachable", label: "Backend unreachable" };
+      return { dot: "unreachable", label: "Offline", detail: "Backend unreachable" };
     case "ready":
       return state.health.status === "ok"
-        ? { style: "ok", label: "Backend healthy - database ok" }
-        : { style: "degraded", label: `Backend degraded - database ${state.health.database}` };
+        ? { dot: "ok", label: "Online", detail: "Backend healthy, database ok" }
+        : {
+            dot: "degraded",
+            label: "Degraded",
+            detail: `Backend degraded, database ${state.health.database}`,
+          };
   }
 }
 
+/** Compact backend status for the header; the full sentence is in the title and for screen readers. */
 export default function HealthBadge() {
   const [state, setState] = useState<State>({ kind: "loading" });
 
@@ -44,14 +50,19 @@ export default function HealthBadge() {
     };
   }, []);
 
-  const { style, label } = describe(state);
+  const { dot, label, detail } = describe(state);
   return (
     <span
       role="status"
       data-testid="health-badge"
-      className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-medium ring-1 ring-inset ${STYLES[style]}`}
+      title={detail}
+      className="inline-flex h-8 items-center gap-2 rounded-full border border-border bg-surface px-3 text-xs font-medium text-fg-muted"
     >
-      {label}
+      <span className={cx("size-2 rounded-full", DOTS[dot])} aria-hidden />
+      <span aria-hidden className="hidden sm:inline">
+        {label}
+      </span>
+      <span className="sr-only">{detail}</span>
     </span>
   );
 }

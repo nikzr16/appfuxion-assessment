@@ -14,6 +14,7 @@ from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging
 from app.modules.agent import service as agent_service
 from app.modules.agent.router import router as agent_router
+from app.modules.client_config.router import router as client_config_router
 from app.modules.documents.pipeline import register_pipeline_runner
 from app.modules.documents.router import router as documents_router
 from app.modules.health.router import router as health_router
@@ -26,6 +27,7 @@ ROUTERS: list[APIRouter] = [
     text_extraction_router,
     structured_extraction_router,
     agent_router,
+    client_config_router,
 ]
 
 

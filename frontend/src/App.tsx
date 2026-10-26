@@ -1,13 +1,20 @@
-import HealthBadge from "./components/HealthBadge.tsx";
+import type { RouteObject } from "react-router";
 
-export default function App() {
-  return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-6">
-      <h1 className="text-3xl font-semibold tracking-tight text-slate-900">
-        Document Intelligence Agent
-      </h1>
-      <p className="text-slate-600">Upload an invoice or receipt and get validated data.</p>
-      <HealthBadge />
-    </main>
-  );
-}
+import { AppLayout } from "./components/layout/AppLayout.tsx";
+import DocumentDetailPage from "./features/detail/DocumentDetailPage.tsx";
+import DocumentsPage from "./features/documents/DocumentsPage.tsx";
+import UploadPage from "./features/upload/UploadPage.tsx";
+import NotFoundPage from "./pages/NotFoundPage.tsx";
+
+/** Route table (PRD D1); used by the browser router and by tests with a memory router. */
+export const routes: RouteObject[] = [
+  {
+    element: <AppLayout />,
+    children: [
+      { path: "/", element: <UploadPage /> },
+      { path: "/documents", element: <DocumentsPage /> },
+      { path: "/documents/:id", element: <DocumentDetailPage /> },
+      { path: "*", element: <NotFoundPage /> },
+    ],
+  },
+];

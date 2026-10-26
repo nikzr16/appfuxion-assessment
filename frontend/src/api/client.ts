@@ -1,5 +1,17 @@
 /** Typed fetch wrapper for the backend API. All calls go through `request`. */
 
+import type {
+  AgentResult,
+  AgentRunRead,
+  ClientConfig,
+  DocumentList,
+  DocumentRead,
+  DocumentStatus,
+  DocumentTextResponse,
+  DocumentUploadResponse,
+  ExtractionResponse,
+} from "./types.ts";
+
 const API_BASE: string = import.meta.env.VITE_API_BASE ?? "/api";
 
 /** Error body shape returned by every backend error: `{"error": {"code", "message"}}`. */
@@ -33,10 +45,16 @@ function isApiErrorBody(value: unknown): value is ApiErrorBody {
 }
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { Accept: "application/json", ...init?.headers },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers: { Accept: "application/json", ...init?.headers },
+    });
+  } catch (error) {
+    // fetch only rejects when no HTTP answer arrived (offline, DNS, proxy down).
+    throw new ApiError(0, "network_error", "Cannot reach the server.", error);
+  }
 
   const text = await response.text();
   let body: unknown = null;
@@ -83,4 +101,75 @@ export async function getHealth(): Promise<HealthResponse> {
     }
     throw error;
   }
+}
+
+// -- Config ------------------------------------------------------------------------
+
+/** `GET /api/config`: upload limits and display settings from the backend. */
+export function getConfig(): Promise<ClientConfig> {
+  return request<ClientConfig>("/config");
+}
+
+// -- Documents ---------------------------------------------------------------------
+
+/** `POST /api/documents` with multipart field `file`; processing starts in the background. */
+export function uploadDocument(file: File): Promise<DocumentUploadResponse> {
+  const body = new FormData();
+  body.append("file", file);
+  // No Content-Type header: the browser sets multipart/form-data with its boundary.
+  return request<DocumentUploadResponse>("/documents", { method: "POST", body });
+}
+
+export interface ListDocumentsParams {
+  limit: number;
+  offset: number;
+  status?: DocumentStatus;
+}
+
+/** `GET /api/documents`, newest first. */
+export function listDocuments({ limit, offset, status }: ListDocumentsParams): Promise<DocumentList> {
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (status) query.set("status", status);
+  return request<DocumentList>(`/documents?${query.toString()}`);
+}
+
+export function getDocument(id: string): Promise<DocumentRead> {
+  return request<DocumentRead>(`/documents/${encodeURIComponent(id)}`);
+}
+
+/** `GET /api/documents/{id}/result`; 409 `result_not_ready` / `result_unavailable` are thrown. */
+export function getResult(id: string): Promise<AgentResult> {
+  return request<AgentResult>(`/documents/${encodeURIComponent(id)}/result`);
+}
+
+/** Runs a read whose 409 means "nothing saved yet" and returns `null` in that case. */
+async function nullOnConflict<T>(read: Promise<T>): Promise<T | null> {
+  try {
+    return await read;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) return null;
+    throw error;
+  }
+}
+
+/** Saved structured data, or `null` when none exists (409 `extraction_*`). */
+export function getExtraction(id: string): Promise<ExtractionResponse | null> {
+  return nullOnConflict(request<ExtractionResponse>(`/documents/${encodeURIComponent(id)}/extraction`));
+}
+
+/** Saved raw text, or `null` when none exists (409 `text_*`). */
+export function getText(id: string): Promise<DocumentTextResponse | null> {
+  return nullOnConflict(request<DocumentTextResponse>(`/documents/${encodeURIComponent(id)}/text`));
+}
+
+/** `GET /api/documents/{id}/runs`, newest first, each with its tool-call steps. */
+export function getRuns(id: string): Promise<AgentRunRead[]> {
+  return request<AgentRunRead[]>(`/documents/${encodeURIComponent(id)}/runs`);
+}
+
+/** `POST /api/documents/{id}/reprocess`; 409 `already_processing` is thrown. */
+export function reprocessDocument(id: string): Promise<DocumentUploadResponse> {
+  return request<DocumentUploadResponse>(`/documents/${encodeURIComponent(id)}/reprocess`, {
+    method: "POST",
+  });
 }

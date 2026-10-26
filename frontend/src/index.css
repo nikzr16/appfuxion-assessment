@@ -1,1 +1,135 @@
 @import "tailwindcss";
+
+/* Dark mode follows a `.dark` class on <html> (set before first paint by index.html and
+   kept in sync by lib/theme.ts), so the header toggle can override the system setting. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens: one set of semantic colours, redefined for dark mode. Components use the
+   Tailwind names below (bg-surface, text-fg-muted, border-border, ...) and never raw
+   palette colours, so both themes stay consistent. */
+:root {
+  --canvas: #f5f6fa;
+  --surface: #ffffff;
+  --surface-2: #f1f4f9;
+  --border: #e3e7ef;
+  --border-strong: #cfd6e3;
+  --fg: #0f172a;
+  --fg-muted: #475569;
+  --fg-subtle: #64748b;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef0ff;
+  --accent-fg: #ffffff;
+  --success: #047857;
+  --success-soft: #e8f8f1;
+  --warning: #b45309;
+  --warning-soft: #fff6e5;
+  --danger: #b91c1c;
+  --danger-soft: #fdeeee;
+  --info: #0369a1;
+  --info-soft: #e9f5fd;
+  --ring: #6366f1;
+  --shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 4px 16px rgb(15 23 42 / 0.05);
+  color-scheme: light;
+}
+
+.dark {
+  --canvas: #0a0f1c;
+  --surface: #111827;
+  --surface-2: #182234;
+  --border: #243047;
+  --border-strong: #33415c;
+  --fg: #e8ecf4;
+  --fg-muted: #aab4c6;
+  --fg-subtle: #8b97ad;
+  --accent: #8b93ff;
+  --accent-hover: #a5abff;
+  --accent-soft: rgb(139 147 255 / 0.14);
+  --accent-fg: #0a0f1c;
+  --success: #34d399;
+  --success-soft: rgb(52 211 153 / 0.12);
+  --warning: #fbbf24;
+  --warning-soft: rgb(251 191 36 / 0.12);
+  --danger: #f87171;
+  --danger-soft: rgb(248 113 113 / 0.12);
+  --info: #38bdf8;
+  --info-soft: rgb(56 189 248 / 0.12);
+  --ring: #a5abff;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.25);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: "Poppins", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "Cascadia Code", Menlo, Consolas, monospace;
+
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-fg: var(--accent-fg);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-ring: var(--ring);
+
+  --shadow-card: var(--shadow);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-canvas font-sans text-fg antialiased;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
+
+  ::selection {
+    @apply bg-accent-soft text-fg;
+  }
+
+  dialog::backdrop {
+    background: rgb(10 15 28 / 0.55);
+    backdrop-filter: blur(2px);
+  }
+}
+
+@utility flash-highlight {
+  animation: flash-highlight 1.6s ease-out;
+}
+
+@keyframes flash-highlight {
+  0%,
+  35% {
+    box-shadow: 0 0 0 4px var(--ring);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
