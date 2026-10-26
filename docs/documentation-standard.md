@@ -30,6 +30,8 @@ Name documents as `[feature]-[type].md` where type matches the document's role:
 | `-plan.md` | Plan |
 | `-workflow.md` | Workflow |
 
+**Module PRDs and plans are numbered:** `docs/prd/NNNN-[module]-prd.md` and `docs/plan/NNNN-[module]-plan.md`, where `NNNN` is a 4-digit, zero-padded number assigned incrementally per module (`0001`, `0002`, …). A module's PRD and plan share the same number, which also names its git branch (`feature/NNNN-[module]`). Numbers are never reused or renumbered.
+
 The product roadmap is `product-roadmap.md` (one per project). Reference docs live in `docs/reference/` with descriptive names such as `folder-structure.md`. Decision log entries use `NNNN-short-title.md`.
 
 A feature may have a combined Intent/Plan document or separate PRD and plan files. The templates support the split approach.

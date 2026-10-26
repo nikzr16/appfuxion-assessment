@@ -52,7 +52,32 @@ schemas, or config change).
 1. **Docs-first:** Read `docs/product-roadmap.md` and the relevant PRD/plan before feature
    work; follow `docs/documentation-standard.md` for doc maintenance and the session-close
    checklist.
-2. _Add project conventions here (imports, typing, module layout, naming, …)._
+2. **Numbered module docs:** every module the user asks to develop gets a PRD and a plan
+   that share one 4-digit, zero-padded number, assigned incrementally (`0001`, `0002`, …):
+   - PRD → `docs/prd/NNNN-<module>-prd.md`
+   - Plan → `docs/plan/NNNN-<module>-plan.md`
+   - Next number = highest existing `NNNN` in `docs/prd/` + 1. Never reuse or renumber.
+   - Write both (from `docs/templates/`) and register the PRD in `docs/product-roadmap.md`
+     before any code is written for that module.
+3. _Add project conventions here (imports, typing, module layout, naming, …)._
+
+## Git Branching Model
+
+Three tiers. Never commit directly to `main` or `dev`.
+
+| Branch | Role | Updated by |
+|---|---|---|
+| `main` | Production | Merge from `dev` only, and only when the user asks for a release |
+| `dev` | Integration / staging | Merge from a stable feature branch |
+| `feature/NNNN-<module>` | One module's work (`NNNN` matches its PRD/plan) | Commits during development |
+
+Flow for each module:
+1. `git switch dev && git pull` — always start from the latest `dev`.
+2. `git switch -c feature/NNNN-<module>` — write the PRD + plan, then implement.
+3. When the module is stable (tests pass, user confirms), push the branch and merge it
+   into `dev`; push `dev`.
+4. The next module branches from the updated `dev` (back to step 1).
+5. Promote `dev` → `main` only on an explicit user request.
 
 ## Domain Rules
 
