@@ -265,6 +265,12 @@ def extract_text(
         return _to_read(row)
 
 
+def find_text(db: Session, document_id: uuid.UUID) -> DocumentTextRead | None:
+    """The saved text, or ``None`` when none has been extracted. Never extracts."""
+    row = crud.get_by_document(db, document_id)
+    return _to_read(row) if row is not None else None
+
+
 def get_text(db: Session, document_id: uuid.UUID) -> DocumentTextRead:
     """The saved text; never extracts. Explains why there is none (409) or 404 if unknown."""
     row = crud.get_by_document(db, document_id)

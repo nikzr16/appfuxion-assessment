@@ -13,10 +13,10 @@ current state; record the divergence in the decision log.
 
 ## Overview
 
-Structure of the Document Intelligence Agent repository as of feature `0002`
-(text extraction): a FastAPI backend with shared core infrastructure, a `health` module, the
-`documents` upload module and the `text_extraction` module, a Vite + React frontend skeleton, PostgreSQL + pgvector in
-Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
+Structure of the Document Intelligence Agent repository as of feature `0003`
+(structured extraction): a FastAPI backend with shared core infrastructure, a `health` module,
+the `documents` upload module, the `text_extraction` module and the `structured_extraction`
+module, a Vite + React frontend skeleton, PostgreSQL + pgvector in Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
 
 ## Directory Layout
 
@@ -25,28 +25,31 @@ Docker, and CI. Each feature adds a folder under `backend/app/modules/`.
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                 # create_app(), ROUTERS list, /api prefix
-│   │   ├── models.py               # model registry imported by Alembic (documents, text_extraction)
+│   │   ├── models.py               # model registry imported by Alembic (documents, text_extraction, structured_extraction)
 │   │   ├── core/
 │   │   │   ├── config.py           # pydantic-settings Settings, get_settings()
 │   │   │   ├── db.py               # engine, SessionLocal, Base, get_db
-│   │   │   ├── llm.py              # LLMClient, OpenAILLMClient, FakeLLM, TokenUsage
+│   │   │   ├── llm.py              # LLMClient, OpenAILLMClient, FakeLLM, TokenUsage, LLMResponse (parsed, refusal)
 │   │   │   ├── storage.py          # Storage protocol, LocalStorage (save, save_as), get_storage
-│   │   │   ├── errors.py           # AppError hierarchy (incl. ConflictError 409) + handlers (app, HTTP, request validation)
+│   │   │   ├── errors.py           # AppError hierarchy (incl. ConflictError 409, LLMOutputError) + handlers (app, HTTP, request validation)
 │   │   │   └── logging.py          # JSON formatter, document_id context var
 │   │   └── modules/
 │   │       ├── health/             # router.py, service.py, schema.py
 │   │       ├── documents/          # model, crud, schema, service, router, pipeline (hook for 0005)
-│   │       └── text_extraction/    # model, crud, schema, service, router, prompts (PDF parser + vision)
+│   │       ├── text_extraction/    # model, crud, schema, service, router, prompts (PDF parser + vision)
+│   │       └── structured_extraction/  # model, crud, schema (InvoiceData), service, router, prompts
 │   ├── migrations/
 │   │   ├── env.py                  # URL from settings, metadata from app.models
 │   │   ├── script.py.mako
-│   │   └── versions/               # 0001_enable_pgvector.py, 0002_create_documents.py, 0003_create_document_texts.py
+│   │   └── versions/               # 0001_enable_pgvector.py, 0002_create_documents.py, 0003_create_document_texts.py,
+│   │                               # 0004_create_extractions.py
 │   ├── tests/
 │   │   ├── conftest.py             # test DB, migrate once, client / fake_llm / storage fixtures
 │   │   ├── core/                   # test_llm, test_storage, test_errors, test_logging
 │   │   ├── modules/health/         # test_router, test_service
 │   │   ├── modules/documents/      # conftest (byte samples, pipeline spy), test_router, test_service
 │   │   ├── modules/text_extraction/  # conftest (make_document), samples (PDF/image builders), test_router, test_service
+│   │   ├── modules/structured_extraction/  # conftest (make_document with text, invoice()), test_schema, test_service, test_router
 │   │   └── test_app.py, test_config.py, test_migrations.py
 │   ├── alembic.ini
 │   ├── pyproject.toml              # deps (pdfplumber, pypdfium2, pillow; dev: reportlab), ruff, pytest config
@@ -85,6 +88,7 @@ forward `/api` to the backend.
 | GET | `/api/documents/{document_id}` | `documents` | 200 `DocumentRead`; 404 unknown id; 422 id not a UUID |
 | GET | `/api/documents` | `documents` | `?limit=1..100 (20)&offset=0&status=` → 200 `DocumentList`, newest first |
 | GET | `/api/documents/{document_id}/text` | `text_extraction` | 200 `DocumentTextResponse` once text exists (any document status); 404 unknown id; 422 id not a UUID; 409 `text_not_ready` (still `processing`) / `text_unavailable` (`completed` / `failed`, message includes the document's error). Read-only: never starts an extraction or calls OpenAI |
+| GET | `/api/documents/{document_id}/extraction` | `structured_extraction` | 200 `ExtractionResponse` once structured data exists (any document status); 404 unknown id; 422 id not a UUID; 409 `extraction_not_ready` (still `processing`) / `extraction_unavailable` (`completed` / `failed`, message includes the document's error). Read-only: never extracts or calls OpenAI |
 | GET | `/api/docs` | FastAPI | Swagger UI (`/api/openapi.json` for the schema) |
 
 ## Schemas (DTOs)
@@ -102,13 +106,22 @@ forward `/api` to the backend.
 | `PageTranscription` (LLM output) | `text_extraction` | `text: str`, `legible: bool` — one vision call per page, strict structured output |
 | `DocumentTextRead` (internal) | `text_extraction` | every `document_texts` column (`id`, `document_id`, `raw_text`, `method`, `page_count`, `model`, `prompt_version`, `created_at`, `updated_at`) |
 | `DocumentTextResponse` | `text_extraction` | `document_id: UUID`, `raw_text`, `method`, `page_count` |
+| `DocumentType` | `structured_extraction` | `invoice` \| `receipt` \| `unknown` |
+| `LineItem` | `structured_extraction` | `description`, `quantity`, `unit_price`, `amount` — all required, nullable; numbers are `Decimal` |
+| `InvoiceData` (LLM output + 0004 input) | `structured_extraction` | `document_type`, `vendor`, `vendor_address`, `vendor_tax_id`, `customer_name`, `customer_address`, `invoice_number`, `invoice_date: date`, `due_date: date`, `payment_terms`, `currency` (3 upper-case letters), `subtotal`, `tax`, `total_amount` (`Decimal`), `line_items: LineItem[]`. Strict structured-output schema: every field required + nullable, `additionalProperties: false`, money as JSON `number`; blank text → null. In JSON (DB, API) money is a decimal string and dates are `YYYY-MM-DD` |
+| `ExtractionRead` (internal) | `structured_extraction` | every `extractions` column, `data: InvoiceData` |
+| `ExtractionResponse` | `structured_extraction` | `document_id: UUID`, `structured_data: InvoiceData`, `model`, `prompt_version`, `attempts` |
 | Error body | `core/errors.py` | `{"error": {"code": str, "message": str, "details"?: any}}` — used for `AppError`, framework HTTP errors (404/405) and request validation (422, `details` = field errors) |
 
 Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_type` (415),
-`payload_too_large` (413), `llm_error` / `llm_not_configured` (502), `internal_error` (500),
-`conflict` (409, base) with `text_not_ready` / `text_unavailable` (409), and
+`payload_too_large` (413), `llm_error` / `llm_not_configured` (502), `llm_invalid_output`
+(502, `LLMOutputError`: a structured reply failed its schema; carries `errors`),
+`internal_error` (500), `conflict` (409, base) with `text_not_ready` / `text_unavailable` /
+`text_not_extracted` / `extraction_not_ready` / `extraction_unavailable` (409),
 `unreadable_document` / `no_text_found` (422, `TextExtractionError`; raised by
-`text_extraction.service.extract_text`, never returned by the GET route).
+`text_extraction.service.extract_text`, never returned by the GET route), and
+`invalid_llm_output` / `llm_refused` (502, `StructuredExtractionError`; raised by
+`structured_extraction.service.extract_structured_data`).
 
 ## Database
 
@@ -117,7 +130,7 @@ Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_ty
 | Engine | PostgreSQL 18 + pgvector (`pgvector/pgvector:pg18-trixie`) |
 | Container / volume | `appfuxion-db` / `appfuxion_pgdata` (mounted at `/var/lib/postgresql`) |
 | Driver | SQLAlchemy 2.0 + psycopg 3 (`postgresql+psycopg://`) |
-| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents`; `0003` creates `document_texts` |
+| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents`; `0003` creates `document_texts`; `0004` creates `extractions` |
 | ID rule | Every table's primary key is a native `UUID` (v4, `uuid.uuid4()`), exposed as a plain dashed UUID |
 | Test database | `appfuxion_test` on the same server (created and migrated by `conftest.py`) |
 
@@ -157,6 +170,25 @@ Constraints: `pk_document_texts`, `uq_document_texts_document_id`,
 `fk_document_texts_document_id_documents`, `ck_document_texts_method_valid`,
 `ck_document_texts_page_count_positive`.
 
+### Table `extractions`
+
+One row per document, written by `structured_extraction.service.extract_structured_data`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `UUID` PK | v4 |
+| `document_id` | `UUID` UNIQUE | FK `documents.id`, `ON DELETE CASCADE` |
+| `data` | `JSONB` | `InvoiceData` in JSON mode: money as decimal strings, dates as ISO strings |
+| `model` | `VARCHAR(100)` | Model that answered |
+| `prompt_version` | `VARCHAR(50)` | `structured_extraction.v1` |
+| `attempts` | `INTEGER` | `CHECK >= 1`; 2 when the retry was used |
+| `prompt_tokens`, `completion_tokens` | `INTEGER` | `CHECK >= 0`; summed over the replies received (a reply rejected by validation is not counted) |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` | `now()` defaults; `updated_at` bumped when `force=True` replaces the row |
+
+Constraints: `pk_extractions`, `uq_extractions_document_id`,
+`fk_extractions_document_id_documents`, `ck_extractions_attempts_positive`,
+`ck_extractions_prompt_tokens_non_negative`, `ck_extractions_completion_tokens_non_negative`.
+
 ## Configuration
 
 Read by `app/core/config.py` from environment variables, then `../.env` / `.env`.
@@ -193,6 +225,8 @@ A new module's router is added to the single list in `app/main.py`:
 ROUTERS: list[APIRouter] = [
     health_router,
     documents_router,
+    text_extraction_router,
+    structured_extraction_router,
 ]
 ```
 
@@ -209,6 +243,20 @@ Text extraction is a plain service function, not wired into the upload pipeline:
 `text_extraction.service.extract_text(db, storage, llm, document_id, *, force=False)` is what
 the 0005 agent tool will call. It commits its own row, never changes the document status and
 raises `TextExtractionError` / `LLMError` for the caller to turn into `failed`.
+`text_extraction.service.find_text(db, document_id)` returns the saved text or `None` (never
+extracts) for other modules.
+
+Structured extraction is the same kind of function:
+`structured_extraction.service.extract_structured_data(db, llm, document_id, *, force=False)`
+reads the saved text through `text_extraction.service.find_text` (409 `text_not_extracted`
+when there is none), makes one `response_format=InvoiceData` call (temperature 0), retries
+once with the validation errors fed back, commits its own row, never changes the document
+status, and raises `StructuredExtractionError` / `LLMError` for the caller to turn into
+`failed`.
+
+LLM seam: `LLMClient.complete(..., response_format=X)` returns `LLMResponse.parsed`; a reply
+that fails `X`'s validation raises `LLMOutputError` (both `OpenAILLMClient` and `FakeLLM`),
+and a refusal is returned as `LLMResponse.refusal` with `parsed=None`.
 
 ## Dependencies added in 0002
 
@@ -232,3 +280,6 @@ raises `TextExtractionError` / `LLMError` for the caller to turn into `failed`.
 | `docs/decisions/0001-setup-implementation-divergences.md` | Decision log | Where the implementation differs from the plan |
 | `docs/decisions/0002-documents-implementation-divergences.md` | Decision log | 0001 documents divergences |
 | `docs/decisions/0003-text-extraction-implementation-divergences.md` | Decision log | 0002 text extraction divergences |
+| `docs/prd/0003-structured-extraction-prd.md` | Intent | Structured extraction goals and decisions (D1-D12) |
+| `docs/plan/0003-structured-extraction-plan.md` | Plan | Structured extraction implementation path |
+| `docs/decisions/0004-structured-extraction-implementation-divergences.md` | Decision log | 0003 structured extraction divergences |

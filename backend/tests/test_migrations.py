@@ -18,7 +18,7 @@ def test_pgvector_type_is_usable(db_session: Session) -> None:
 
 def test_alembic_version_is_at_head(db_session: Session) -> None:
     version = db_session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert version == "0003"
+    assert version == "0004"
 
 
 def test_documents_table_has_a_native_uuid_primary_key(db_session: Session) -> None:
@@ -176,3 +176,99 @@ def test_deleting_a_document_cascades_to_its_text(db_session: Session) -> None:
     db_session.commit()
 
     assert db_session.execute(text("SELECT count(*) FROM document_texts")).scalar() == 0
+
+
+# -- extractions (0003 structured extraction) ------------------------------------------
+
+
+def test_extractions_table_has_native_uuid_keys_and_jsonb_data(db_session: Session) -> None:
+    columns = dict(
+        db_session.execute(
+            text(
+                "SELECT column_name, udt_name FROM information_schema.columns "
+                "WHERE table_name = 'extractions'"
+            )
+        ).all()
+    )
+    assert columns["id"] == "uuid"
+    assert columns["document_id"] == "uuid"
+    assert columns["data"] == "jsonb"
+    assert set(columns) == {
+        "id",
+        "document_id",
+        "data",
+        "model",
+        "prompt_version",
+        "attempts",
+        "prompt_tokens",
+        "completion_tokens",
+        "created_at",
+        "updated_at",
+    }
+
+
+def test_extractions_table_has_its_constraints(db_session: Session) -> None:
+    constraints = dict(
+        db_session.execute(
+            text(
+                "SELECT conname, contype FROM pg_constraint "
+                "WHERE conrelid = 'extractions'::regclass AND contype <> 'n'"
+            )
+        ).all()
+    )
+    assert constraints == {
+        "pk_extractions": "p",
+        "uq_extractions_document_id": "u",
+        "fk_extractions_document_id_documents": "f",
+        "ck_extractions_attempts_positive": "c",
+        "ck_extractions_prompt_tokens_non_negative": "c",
+        "ck_extractions_completion_tokens_non_negative": "c",
+    }
+
+
+def _insert_extraction(
+    db_session: Session, document_id: str, *, attempts: int = 1, prompt_tokens: int = 0
+) -> None:
+    db_session.execute(
+        text(
+            "INSERT INTO extractions (id, document_id, data, model, prompt_version, attempts, "
+            "prompt_tokens, completion_tokens) VALUES (gen_random_uuid(), :document_id, "
+            "'{}'::jsonb, 'm', 'v1', :attempts, :prompt_tokens, 0)"
+        ),
+        {"document_id": document_id, "attempts": attempts, "prompt_tokens": prompt_tokens},
+    )
+
+
+@pytest.mark.parametrize(("attempts", "prompt_tokens"), [(0, 0), (1, -1)])
+def test_extractions_check_constraints_reject_bad_values(
+    db_session: Session, attempts: int, prompt_tokens: int
+) -> None:
+    document_id = _insert_document(db_session)
+    with pytest.raises(IntegrityError):
+        _insert_extraction(db_session, document_id, attempts=attempts, prompt_tokens=prompt_tokens)
+    db_session.rollback()
+
+
+def test_extractions_allows_one_row_per_document(db_session: Session) -> None:
+    document_id = _insert_document(db_session)
+    _insert_extraction(db_session, document_id)
+    with pytest.raises(IntegrityError):
+        _insert_extraction(db_session, document_id)
+    db_session.rollback()
+
+
+def test_extractions_requires_an_existing_document(db_session: Session) -> None:
+    with pytest.raises(IntegrityError):
+        _insert_extraction(db_session, str(uuid.uuid4()))
+    db_session.rollback()
+
+
+def test_deleting_a_document_cascades_to_its_extraction(db_session: Session) -> None:
+    document_id = _insert_document(db_session)
+    _insert_extraction(db_session, document_id)
+    db_session.commit()
+
+    db_session.execute(text("DELETE FROM documents WHERE id = :id"), {"id": document_id})
+    db_session.commit()
+
+    assert db_session.execute(text("SELECT count(*) FROM extractions")).scalar() == 0

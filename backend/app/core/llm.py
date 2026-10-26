@@ -20,10 +20,10 @@ from functools import lru_cache
 from typing import Any, Protocol
 
 import openai
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.core.config import Settings, get_settings
-from app.core.errors import LLMError
+from app.core.errors import LLMError, LLMOutputError
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,8 @@ class LLMResponse:
     model: str
     tool_calls: tuple[ToolCall, ...] = ()
     parsed: BaseModel | None = None
+    # Set when the model declined a structured-output request (``parsed`` is then None).
+    refusal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -88,7 +90,8 @@ class LLMClient(Protocol):
 
         ``model`` defaults to ``OPENAI_MODEL`` (or ``OPENAI_VISION_MODEL`` when
         ``vision=True``). ``response_format`` requests structured output parsed into the
-        given Pydantic model (available as ``LLMResponse.parsed``).
+        given Pydantic model (available as ``LLMResponse.parsed``); a reply that fails
+        that model's validation raises ``LLMOutputError``.
         """
         ...
 
@@ -142,6 +145,11 @@ class OpenAILLMClient:
         except openai.OpenAIError as exc:
             logger.error("llm.complete failed", extra={"model": chosen, "error": str(exc)})
             raise LLMError(f"OpenAI request failed: {exc}") from exc
+        except ValidationError as exc:  # the SDK parses structured replies with Pydantic
+            logger.warning(
+                "llm.complete invalid output", extra={"model": chosen, "errors": exc.error_count()}
+            )
+            raise _output_error(exc) from exc
 
         message = completion.choices[0].message
         usage = _usage_from(completion.usage)
@@ -164,6 +172,7 @@ class OpenAILLMClient:
             model=getattr(completion, "model", chosen),
             tool_calls=tool_calls,
             parsed=getattr(message, "parsed", None),
+            refusal=getattr(message, "refusal", None),
         )
 
     def embed(self, texts: Sequence[str], *, model: str | None = None) -> EmbeddingResponse:
@@ -190,6 +199,13 @@ class OpenAILLMClient:
             usage=usage,
             model=getattr(result, "model", chosen),
         )
+
+
+def _output_error(exc: ValidationError) -> LLMOutputError:
+    return LLMOutputError(
+        f"The model's structured reply did not match {exc.title}.",
+        errors=[dict(e) for e in exc.errors(include_url=False, include_context=False)],
+    )
 
 
 def _usage_from(usage: Any) -> TokenUsage:
@@ -222,7 +238,9 @@ class FakeLLM:
     """Scripted ``LLMClient`` for tests: replays queued replies in order, records calls.
 
     Replies may be a string (content), a Pydantic model (structured output), a ready-made
-    ``LLMResponse`` (e.g. with tool calls) or an exception instance, which is raised.
+    ``LLMResponse`` (e.g. with tool calls or a refusal) or an exception instance, which is
+    raised. A string that fails ``response_format`` validation raises ``LLMOutputError``,
+    as the real client does.
     """
 
     def __init__(
@@ -280,7 +298,10 @@ class FakeLLM:
                 parsed=reply,
             )
         else:
-            parsed = response_format.model_validate_json(reply) if response_format else None
+            try:
+                parsed = response_format.model_validate_json(reply) if response_format else None
+            except ValidationError as exc:
+                raise _output_error(exc) from exc
             response = LLMResponse(content=reply, usage=self.usage, model=self.model, parsed=parsed)
         self.total_usage = self.total_usage + response.usage
         return response

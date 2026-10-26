@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from app.core.config import Settings
-from app.core.errors import LLMError
+from app.core.errors import LLMError, LLMOutputError
 from app.core.llm import (
     FakeLLM,
     LLMResponse,
@@ -56,6 +56,26 @@ def test_fake_llm_structured_output_from_model_and_json_string() -> None:
     assert second.parsed == Answer(vendor=None, total="5.00")
 
 
+def test_fake_llm_invalid_structured_reply_raises_llm_output_error() -> None:
+    fake = FakeLLM(['{"vendor": "ACME"}'])
+
+    with pytest.raises(LLMOutputError) as caught:
+        fake.complete([], response_format=Answer)
+
+    assert caught.value.code == "llm_invalid_output"
+    assert caught.value.status_code == 502
+    assert [e["loc"] for e in caught.value.errors] == [("total",)]
+    assert len(fake.calls) == 1  # the call is still recorded
+
+
+def test_fake_llm_can_script_a_refusal() -> None:
+    refusal = LLMResponse(content=None, usage=TokenUsage(), model="m", refusal="I can't help.")
+    reply = FakeLLM([refusal]).complete([], response_format=Answer)
+
+    assert reply.parsed is None
+    assert reply.refusal == "I can't help."
+
+
 def test_fake_llm_can_return_tool_calls_and_raise_errors() -> None:
     call = ToolCall(id="call_1", name="validate_invoice", arguments="{}")
     fake = FakeLLM(
@@ -95,13 +115,17 @@ def stub_sdk(*, create: Any = None, parse: Any = None, embed: Any = None) -> Any
     )
 
 
-def completion(content: str | None, *, tool_calls: Any = None, parsed: Any = None) -> Any:
+def completion(
+    content: str | None, *, tool_calls: Any = None, parsed: Any = None, refusal: Any = None
+) -> Any:
     return SimpleNamespace(
         model="gpt-test-2026",
         usage=SimpleNamespace(prompt_tokens=11, completion_tokens=7),
         choices=[
             SimpleNamespace(
-                message=SimpleNamespace(content=content, tool_calls=tool_calls, parsed=parsed)
+                message=SimpleNamespace(
+                    content=content, tool_calls=tool_calls, parsed=parsed, refusal=refusal
+                )
             )
         ],
     )
@@ -174,6 +198,28 @@ def test_openai_sdk_errors_become_llm_error() -> None:
     client = OpenAILLMClient(settings(), client=stub_sdk(create=create))
     with pytest.raises(LLMError, match="rate limited"):
         client.complete([])
+
+
+def test_openai_structured_validation_failure_becomes_llm_output_error() -> None:
+    def parse(**kwargs: Any) -> Any:
+        Answer.model_validate_json('{"vendor": 1, "total": null}')  # what the SDK does
+
+    client = OpenAILLMClient(settings(), client=stub_sdk(parse=parse))
+    with pytest.raises(LLMOutputError) as caught:
+        client.complete([], response_format=Answer)
+
+    assert isinstance(caught.value, LLMError)
+    assert caught.value.errors[0]["loc"] == ("vendor",)
+    assert caught.value.errors[0]["input"] == 1
+    assert "url" not in caught.value.errors[0]
+
+
+def test_openai_client_surfaces_a_refusal() -> None:
+    sdk = stub_sdk(parse=lambda **kw: completion(None, refusal="I can't help with that."))
+    reply = OpenAILLMClient(settings(), client=sdk).complete([], response_format=Answer)
+
+    assert reply.parsed is None
+    assert reply.refusal == "I can't help with that."
 
 
 def test_real_client_requires_api_key_but_construction_is_lazy() -> None:

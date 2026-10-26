@@ -4,6 +4,8 @@ Every error response has the shape ``{"error": {"code": "...", "message": "..."}
 Services raise these; routers never need try/except boilerplate.
 """
 
+from typing import Any
+
 from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -56,6 +58,18 @@ class LLMError(AppError):
 
     status_code = status.HTTP_502_BAD_GATEWAY
     code = "llm_error"
+
+
+class LLMOutputError(LLMError):
+    """A structured reply did not validate against its schema; ``errors`` says why."""
+
+    code = "llm_invalid_output"
+
+    def __init__(
+        self, message: str, *, errors: list[dict[str, Any]], code: str | None = None
+    ) -> None:
+        super().__init__(message, code=code)
+        self.errors = errors
 
 
 def error_body(

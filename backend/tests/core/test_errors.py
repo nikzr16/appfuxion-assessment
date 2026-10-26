@@ -6,6 +6,7 @@ from app.core.errors import (
     AppError,
     ConflictError,
     LLMError,
+    LLMOutputError,
     NotFoundError,
     PayloadTooLargeError,
     UnsupportedMediaError,
@@ -34,6 +35,7 @@ def build_client(error: AppError) -> TestClient:
         (UnsupportedMediaError("only pdf/jpg/png"), 415, "unsupported_media_type"),
         (PayloadTooLargeError("too big"), 413, "payload_too_large"),
         (LLMError("upstream down"), 502, "llm_error"),
+        (LLMOutputError("bad reply", errors=[]), 502, "llm_invalid_output"),
         (AppError("generic"), 500, "internal_error"),
     ],
 )
