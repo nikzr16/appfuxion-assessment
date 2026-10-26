@@ -501,6 +501,18 @@ def test_get_text_returns_the_saved_row(
     assert service.get_text(db_session, document_id) == extracted
 
 
+def test_find_text_returns_the_row_or_none_without_extracting(
+    db_session: Session, storage: LocalStorage, fake_llm: FakeLLM, make_document: MakeDocument
+) -> None:
+    document_id = make_document(PDF, samples.text_pdf())
+
+    assert service.find_text(db_session, document_id) is None
+    assert service.find_text(db_session, uuid.uuid4()) is None
+
+    extracted = service.extract_text(db_session, storage, fake_llm, document_id)
+    assert service.find_text(db_session, document_id) == extracted
+
+
 def test_get_text_for_a_processing_document_is_not_ready(
     db_session: Session, make_document: MakeDocument
 ) -> None:

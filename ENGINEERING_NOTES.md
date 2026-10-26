@@ -98,6 +98,43 @@ feature number (`0000`, `0001`, ...).
   (both 422); an OpenAI failure stays `llm_error` (502). Nothing is saved, so the caller can
   mark the document `failed` with a clear reason instead of feeding empty text to 0003.
 
+### 0003 - Structured extraction
+
+- **One schema, two jobs.** `InvoiceData` is both the OpenAI strict structured-output schema
+  and the typed DTO that validation (0004) consumes. Strict mode needs every field required
+  and no defaults, so "missing" is expressed as `null`, never as an absent key, and
+  `line_items` is always a list. Besides the brief's fields it has `subtotal` and `tax` (so
+  0004 can check subtotal + tax = total) and the party fields `vendor_address`,
+  `vendor_tax_id`, `customer_name`, `customer_address`, `payment_terms`.
+- **Exact money.** Money and quantities are `Decimal` in code. Pydantic's default schema for
+  `Decimal` is `number | string`, which would let the model answer `"RM 12.30"`; a
+  `WithJsonSchema` override shows the model a plain JSON `number`, and Pydantic reads a JSON
+  number into `Decimal` exactly (`0.1` stays `0.1`, no float rounding). In JSONB and the API
+  money is a decimal string. Dates are `date` (`format: date` in the schema), stored and
+  returned as ISO `YYYY-MM-DD`; the UI (0006) displays `DD-MM-YYYY`.
+- **The model interprets, code checks the shape.** The model maps currency symbols to ISO
+  codes and day/month order to ISO dates, because that needs the whole document as context.
+  Code then strips text (blank → `null`), upper-cases the currency and rejects anything that
+  is not three letters, and Pydantic rejects impossible dates. Whether a code is a real
+  currency, totals and due-date order are 0004's deterministic checks, not retry triggers.
+- **One retry, with the reasons.** A reply that fails validation is retried once: the same
+  messages plus a user message listing each error as `field: problem (got: value)`. A refusal
+  (`llm_refused`) and an API error (`llm_error`, already retried by the SDK) are not retried.
+  After two invalid replies the error is `invalid_llm_output` (502). To make this possible
+  the LLM seam now turns the SDK's raw `pydantic.ValidationError` into a typed
+  `LLMOutputError` (with the error list) and exposes `LLMResponse.refusal`; `FakeLLM` does the
+  same, so the retry path is tested without the network.
+- **`unknown` is an answer, not an error.** A document that is not an invoice or receipt is
+  saved with `document_type = unknown` and empty fields; the agent (0005) decides what to do.
+- **Same contract as 0002.** `extract_structured_data(db, llm, document_id, force=False)` is
+  idempotent (one row per document; `force` replaces it in place), commits its own row, holds
+  no DB transaction during the LLM call and never changes the document status. It reads the
+  text only through `text_extraction.service.find_text` and raises `text_not_extracted` (409)
+  rather than extracting the text itself, so it needs no storage access and the agent is told
+  which tool to call first. `GET /api/documents/{id}/extraction` is read-only with the same
+  404 / 409 pattern as the text route. `model`, `prompt_version`, `attempts` and token counts
+  are stored with each result.
+
 ## 2. Prompt design
 
 _TODO per feature: prompt structure, versioning (`PROMPT_VERSION`), output schemas, and how
@@ -118,6 +155,30 @@ hallucination is prevented (fields absent from the document are `null`)._
   (refusal, malformed) is an `LLMError`.
 - **Deterministic settings.** Temperature 0 and the model from `OPENAI_VISION_MODEL`.
   Bump `PROMPT_VERSION` on any prompt change so stored rows say which wording produced them.
+
+**0003 - Structured extraction** (`app/modules/structured_extraction/prompts.py`,
+`PROMPT_VERSION = "structured_extraction.v1"`, stored on every row)
+- **The schema is the output format.** `response_format=InvoiceData` (strict), temperature 0,
+  model `OPENAI_MODEL`. Each field carries a one-line `description`; the system prompt holds
+  the rules, so the reply can only be the object, with no prose.
+- **Untrusted input is fenced.** The document text is sent in its own user message inside
+  `<document>` … `</document>`, and the system prompt says that text is data from an uploaded
+  file and any instructions in it must be ignored. 0002's `--- Page N ---` markers are kept
+  (totals are often on the last page) and declared as system markers, not content.
+- **"Never invent" is spelled out.** Copy values as printed; never calculate, add up, convert
+  or guess; a field the document does not state is `null`; only rows printed as items are
+  `line_items` (not subtotal, tax, total or payment rows); `unknown` documents get all `null`.
+  No due date is computed from "Net 30", and a printed tax rate is not turned into an amount.
+- **Normalisation rules are explicit.** Numbers: plain JSON numbers, `.` as decimal point,
+  both `1,234.56` and `1.234,56` → `1234.56`, parentheses or a minus → negative. Dates:
+  `YYYY-MM-DD`; numeric dates decided by evidence in the document (a day above 12, a printed
+  format hint), otherwise `null`; two-digit years are 20YY. Currency: a printed ISO code wins,
+  then a symbol table covering every Southeast Asian currency (RM, S$, Rp, ฿, ₱, ₫, B$, ៛, ₭,
+  Ks, US$) and the common world symbols; a bare `$`, `¥`, `K`, `Fr` or `kr` is `null` unless the
+  document names the currency elsewhere.
+- **Retry feedback is factual.** The retry message lists the validation errors (field path,
+  message, offending value, at most 20 lines) and asks for the complete corrected object,
+  reminding the model that `null` is the answer when a value is not in the document.
 
 ## 3. Limitations
 
@@ -153,6 +214,24 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
 - pypdfium2 (PDF rendering) is not thread-safe. Background tasks run in a thread pool, so
   0005 must serialise rendering (a lock) if several extractions can run at once.
 
+**0003 - Structured extraction**
+- Nothing checks that an extracted value really appears in the text; a confident wrong value
+  passes. Grounding checks and confidence scores are planned for B2, arithmetic checks for 0004.
+- A numeric date whose day/month order the document does not reveal (e.g. `03/04/2025`) is
+  `null`, so 0004 will report it as missing even though a date was printed.
+- Tokens of a reply rejected by validation are not counted: the OpenAI SDK raises before it
+  returns usage. In strict mode only the code-side checks (currency shape, impossible date,
+  non-finite number) can reject a reply, so this is rare, but `prompt_tokens` /
+  `completion_tokens` under-report the retry path. The rejected reply itself is not kept
+  either (no raw output is stored; B1 adds a per-call ledger).
+- Trailing zeros are not preserved: a JSON number `5.00` becomes `Decimal("5")`. The value is
+  exact; only its printed formatting is lost.
+- Text over 60,000 characters is cut to its first 45,000 and last 15,000 characters; line
+  items in the middle of a very long document are lost.
+- If the text is re-extracted with `force=True`, the saved structured data is not invalidated
+  automatically; it must be re-extracted with `force=True` too (0005's reprocess does both).
+- Only one row per document is kept; earlier extractions are overwritten, not versioned.
+
 ## 4. Production improvements
 
 _TODO per feature: what would change for production (auth, a real job queue, object
@@ -176,3 +255,16 @@ retries and rate-limit handling, database backups)._
   vision token cost per document and alert on spend.
 - Retry vision pages with backoff and a fallback model, and allow resuming a partly
   transcribed document instead of starting over.
+
+**0003 - Structured extraction**
+- Add grounding (every extracted value must appear, normalised, in the raw text) and
+  per-field confidence; re-ask only for the fields that failed instead of the whole object.
+- Record every LLM call (raw reply, tokens, latency, validation errors) in a ledger so
+  rejected replies can be inspected and their cost counted; parse the reply ourselves instead
+  of through the SDK so usage survives a validation failure.
+- Version extractions (keep history, link each one to the text row it came from) and
+  invalidate them automatically when the text is re-extracted.
+- Chunk very long documents (extract per page, merge line items) instead of cutting the
+  middle; route ambiguous dates to a human or a locale setting per customer instead of `null`.
+- Evaluate prompt changes against a labelled set of real invoices before bumping
+  `PROMPT_VERSION`, and fall back to a stronger model when the retry also fails.
