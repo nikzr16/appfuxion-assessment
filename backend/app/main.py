@@ -12,6 +12,9 @@ from fastapi import APIRouter, FastAPI
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging
+from app.modules.agent import service as agent_service
+from app.modules.agent.router import router as agent_router
+from app.modules.documents.pipeline import register_pipeline_runner
 from app.modules.documents.router import router as documents_router
 from app.modules.health.router import router as health_router
 from app.modules.structured_extraction.router import router as structured_extraction_router
@@ -22,6 +25,7 @@ ROUTERS: list[APIRouter] = [
     documents_router,
     text_extraction_router,
     structured_extraction_router,
+    agent_router,
 ]
 
 
@@ -37,6 +41,8 @@ def create_app() -> FastAPI:
         openapi_url=f"{settings.api_prefix}/openapi.json",
     )
     register_error_handlers(app)
+    # Uploads are processed by the Document Agent (feature 0005).
+    register_pipeline_runner(agent_service.run_document_agent)
     for router in ROUTERS:
         app.include_router(router, prefix=settings.api_prefix)
 

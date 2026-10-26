@@ -76,7 +76,7 @@ def test_upload_calls_the_pipeline_hook_once_with_the_new_id(
     assert pipeline_spy.calls == [uuid.UUID(response.json()["document_id"])]
 
 
-def test_upload_with_the_default_noop_pipeline_leaves_the_document_processing(
+def test_upload_with_no_pipeline_registered_leaves_the_document_processing(
     client: TestClient, pdf_bytes: bytes
 ) -> None:
     document_id = _post(client, pdf_bytes).json()["document_id"]

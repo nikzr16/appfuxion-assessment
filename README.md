@@ -6,9 +6,11 @@ structured JSON, validates the numbers with deterministic code, and writes a sho
 summary. AI agents (OpenAI tool calling) orchestrate the steps, and past invoices are
 searchable with pgvector.
 
-> **Status:** the project foundation (feature `0000`) and the document upload API
-> (feature `0001`: `POST/GET /api/documents`) are in place. Extraction, validation and
-> the agents land in later numbered features; see
+> **Status:** the core pipeline works end to end (features `0000`–`0005`): upload a
+> document and the **Document Agent** extracts its text (PDF parser or OpenAI vision),
+> turns it into structured JSON, validates it with deterministic code, converts a foreign
+> total to `BASE_CURRENCY` when needed, and writes a summary that mentions every validation
+> problem. The UI and the bonus tasks land in later numbered features; see
 > [`docs/product-roadmap.md`](docs/product-roadmap.md).
 
 ## Stack
@@ -34,19 +36,47 @@ docker compose up --build
 | API (through the UI's proxy) | http://localhost:8080/api/health |
 | API docs (Swagger) | http://localhost:8080/api/docs |
 
-Upload a document (returns `{document_id, status: "processing"}`), then poll it:
+### Process a document end to end
 
-```bash
-curl -F "file=@invoice.pdf;type=application/pdf" http://localhost:8080/api/documents
-```
+1. Upload it. The response is `{document_id, status: "processing"}` and the Document Agent
+   starts in the background:
 
-```bash
-curl http://localhost:8080/api/documents/<document_id>
-```
+   ```bash
+   curl -F "file=@invoice.pdf;type=application/pdf" http://localhost:8080/api/documents
+   ```
+
+2. Poll until `status` is `completed` (or `failed`, with the reason in `error`):
+
+   ```bash
+   curl http://localhost:8080/api/documents/<document_id>
+   ```
+
+3. Get the result `{document_id, structured_data, validation, conversion, summary}`:
+
+   ```bash
+   curl http://localhost:8080/api/documents/<document_id>/result
+   ```
+
+4. Optional: see which tools the agent called, in order, with results and timings:
+
+   ```bash
+   curl http://localhost:8080/api/documents/<document_id>/runs
+   ```
+
+5. Optional: run the whole agent again (text and data are re-extracted):
+
+   ```bash
+   curl -X POST http://localhost:8080/api/documents/<document_id>/reprocess
+   ```
+
+`/result` answers 409 `result_not_ready` while the document is processing and 409
+`result_unavailable` (with the error) when processing failed. The intermediate steps are also
+readable on their own: `GET /api/documents/<document_id>/text` and `/extraction`.
 
 The backend waits for the database, applies the Alembic migrations (which enable the
 `vector` extension), then starts. The app and `/api/health` work without an
-`OPENAI_API_KEY`; the key is only needed once the AI features are used.
+`OPENAI_API_KEY`, but processing needs it: without a key, an upload is rejected with 502
+`llm_not_configured` and nothing is stored.
 
 Stop with `docker compose down`. Data lives in the `appfuxion_pgdata` and
 `appfuxion_uploads` volumes and survives `down` (use `down -v` only if you want to wipe it).
@@ -101,7 +131,10 @@ never touch your development data, and they never call the real OpenAI API.
 
 One root `.env` (git-ignored) drives Docker Compose and the backend. Every key is
 documented in [`.env.example`](.env.example): OpenAI key and model names, Postgres
-credentials and ports, `AGENT_MODE`, `MAX_UPLOAD_MB`, `STORAGE_DIR`, and more.
+credentials and ports, `AGENT_MODE`, `BASE_CURRENCY` (default `MYR`: totals in another
+currency are converted to it), `AGENT_MAX_STEPS` (default 8 model turns per agent run),
+`MAX_UPLOAD_MB`, `STORAGE_DIR`, and more. `AGENT_MODE=multi` is the default; until the
+multi-agent bonus ships it logs a warning and runs the single Document Agent.
 
 ## Project layout
 

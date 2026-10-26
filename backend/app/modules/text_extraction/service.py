@@ -2,6 +2,7 @@ import base64
 import io
 import logging
 import re
+import threading
 import time
 import uuid
 from collections.abc import Sequence
@@ -37,6 +38,8 @@ RENDER_DPI = 200
 MAX_RENDER_SIDE = 4096
 MAX_IMAGE_SIDE = 2048
 JPEG_QUALITY = 90
+# Serialises pypdfium2, which is not thread-safe (see ``_render_pages``).
+_RENDER_LOCK = threading.Lock()
 
 _NO_TEXT_PLACEHOLDERS = re.compile(r"\(cid:\d+\)|\s")
 
@@ -99,18 +102,23 @@ def _prepare_image(source: bytes | Image.Image) -> bytes:
 
 
 def _render_pages(data: bytes, max_pages: int) -> list[bytes]:
-    """Render the first ``max_pages`` PDF pages at ``RENDER_DPI`` and prepare them for vision."""
+    """Render the first ``max_pages`` PDF pages at ``RENDER_DPI`` and prepare them for vision.
+
+    pdfium is not thread-safe and background runs share a thread pool, so the whole render
+    holds ``_RENDER_LOCK`` (the rendered bitmaps share memory with pdfium until prepared).
+    """
     try:
-        pdf = pdfium.PdfDocument(data)
-        try:
-            images: list[bytes] = []
-            for index in range(min(max_pages, len(pdf))):
-                page = pdf[index]
-                width, height = page.get_size()
-                scale = min(RENDER_DPI / 72, MAX_RENDER_SIDE / (max(width, height) or 1))
-                images.append(_prepare_image(page.render(scale=scale).to_pil()))
-        finally:
-            pdf.close()
+        with _RENDER_LOCK:
+            pdf = pdfium.PdfDocument(data)
+            try:
+                images: list[bytes] = []
+                for index in range(min(max_pages, len(pdf))):
+                    page = pdf[index]
+                    width, height = page.get_size()
+                    scale = min(RENDER_DPI / 72, MAX_RENDER_SIDE / (max(width, height) or 1))
+                    images.append(_prepare_image(page.render(scale=scale).to_pil()))
+            finally:
+                pdf.close()
     except pdfium.PdfiumError as exc:
         raise TextExtractionError("The PDF pages could not be rendered.") from exc
     return images
