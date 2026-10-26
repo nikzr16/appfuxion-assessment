@@ -23,6 +23,7 @@ from app.modules.documents.pipeline import DocumentPipeline
 from app.modules.documents.schema import (
     DocumentList,
     DocumentRead,
+    DocumentSource,
     DocumentStatus,
     UploadedFile,
 )
@@ -183,6 +184,11 @@ def create_document(db: Session, storage: Storage, upload: UploadedFile) -> Docu
 
 def get_document(db: Session, document_id: uuid.UUID) -> DocumentRead:
     return _to_read(_get_or_raise(db, document_id))
+
+
+def get_document_source(db: Session, document_id: uuid.UUID) -> DocumentSource:
+    """Where the document's file lives, for other modules (never exposed over HTTP)."""
+    return DocumentSource.model_validate(_get_or_raise(db, document_id))
 
 
 def list_documents(

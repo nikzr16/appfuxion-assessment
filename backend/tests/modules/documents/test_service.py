@@ -408,6 +408,38 @@ def test_get_document_raises_not_found_for_an_unknown_id(db_session: Session) ->
         service.get_document(db_session, uuid.uuid4())
 
 
+def test_get_document_source_returns_the_storage_key_and_status(
+    db_session: Session, storage: LocalStorage, pdf_bytes: bytes
+) -> None:
+    created = _upload(db_session, storage, "invoice.pdf", pdf_bytes)
+
+    source = service.get_document_source(db_session, created.document_id)
+
+    assert source.document_id == created.document_id
+    assert source.content_type == PDF
+    assert source.storage_key == "invoice.pdf"
+    assert storage.read(source.storage_key) == pdf_bytes
+    assert source.status == DocumentStatus.PROCESSING
+    assert source.error is None
+
+
+def test_get_document_source_reflects_a_failed_document(
+    db_session: Session, storage: LocalStorage, pdf_bytes: bytes
+) -> None:
+    created = _upload(db_session, storage, "invoice.pdf", pdf_bytes)
+    service.mark_failed(db_session, created.document_id, "boom")
+
+    source = service.get_document_source(db_session, created.document_id)
+
+    assert source.status == DocumentStatus.FAILED
+    assert source.error == "boom"
+
+
+def test_get_document_source_raises_not_found_for_an_unknown_id(db_session: Session) -> None:
+    with pytest.raises(NotFoundError):
+        service.get_document_source(db_session, uuid.uuid4())
+
+
 def test_list_documents_is_newest_first_with_total_and_paging(
     db_session: Session, storage: LocalStorage, pdf_bytes: bytes
 ) -> None:

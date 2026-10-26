@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
 
@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     # -- Uploads --------------------------------------------------------------
     max_upload_mb: int = 10
     storage_dir: Path = Path("storage")
+
+    # -- Text extraction ------------------------------------------------------
+    # Most pages of a scanned PDF sent to the vision model; later pages are skipped.
+    vision_max_pages: int = Field(default=5, ge=1)
 
     @model_validator(mode="after")
     def _derive_database_url(self) -> "Settings":

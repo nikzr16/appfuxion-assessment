@@ -43,6 +43,22 @@ class DocumentRead(BaseModel):
     updated_at: datetime
 
 
+class DocumentSource(BaseModel):
+    """Internal DTO for other modules: where a document's file is stored and its status.
+
+    Not returned by any route, so ``storage_key`` never leaves the backend.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    document_id: uuid.UUID = Field(validation_alias=AliasChoices("document_id", "id"))
+    content_type: str
+    # The ORM column is ``storage_path``; it is the key ``Storage`` reads.
+    storage_key: str = Field(validation_alias=AliasChoices("storage_key", "storage_path"))
+    status: DocumentStatus
+    error: str | None
+
+
 class DocumentList(BaseModel):
     items: list[DocumentRead]
     total: int
