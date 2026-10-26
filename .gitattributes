@@ -1,0 +1,28 @@
+# Normalise line endings. core.autocrlf=true on Windows would otherwise turn
+# shell scripts and Dockerfiles into CRLF, which breaks them inside Linux containers.
+* text=auto
+
+*.sh     text eol=lf
+Dockerfile*  text eol=lf
+.dockerignore text eol=lf
+*.conf   text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.py     text eol=lf
+*.ini    text eol=lf
+*.toml   text eol=lf
+*.ts     text eol=lf
+*.tsx    text eol=lf
+*.js     text eol=lf
+*.mjs    text eol=lf
+*.cjs    text eol=lf
+*.json   text eol=lf
+*.css    text eol=lf
+*.html   text eol=lf
+*.md     text eol=lf
+
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.pdf    binary
+*.ico    binary

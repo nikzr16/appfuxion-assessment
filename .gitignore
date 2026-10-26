@@ -19,5 +19,18 @@ dist/
 .ruff_cache/
 .claude/settings.local.json
 
-# ── Assessment brief (confidential, do not commit) ────────────────────────────
-docs/prd/source/*.pdf
+# ── Assessment brief + local feature map (confidential, do not commit) ────────
+docs/prd/source/
+
+# ── App runtime data ──────────────────────────────────────────────────────────
+backend/storage/
+*.db
+*.sqlite3
+
+# ── Test / build output ───────────────────────────────────────────────────────
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+*.tsbuildinfo
+frontend/coverage/

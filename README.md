@@ -1,78 +1,120 @@
-# General Harness
+# Document Intelligence Agent
 
-A reusable, hands-off **agent-orchestration harness** for Claude Code with a
-**docs-first** workflow. Start any new project from this template: you describe the
-work in plain language, and the harness routes it to the right agent and workflow.
-You don't need to tag an `@agent` or a skill.
+An AI/ML take-home assessment for AppFuxion. Upload a financial document (an invoice or
+receipt as PDF, JPG, or PNG) and the system extracts its text, uses an LLM to turn it into
+structured JSON, validates the numbers with deterministic code, and writes a short AI
+summary. AI agents (OpenAI tool calling) orchestrate the steps, and past invoices are
+searchable with pgvector.
 
-## What's Inside
+> **Status:** the project foundation (feature `0000`) is in place: backend skeleton,
+> PostgreSQL + pgvector, frontend skeleton, Docker Compose, and CI. Feature endpoints
+> (upload, extraction, agents) land in later numbered features; see
+> [`docs/product-roadmap.md`](docs/product-roadmap.md).
 
-```text
-.
-├── CLAUDE.md               # Generic harness policy (routing, tiers, guardrails) — core
-├── CLAUDE.project.md       # Project context layer — fill this in per project
-├── .mcp.json               # MCP servers (empty by default)
-├── .claude/
-│   ├── agents/             # orchestrator, executor, workflow-author, mcp-connector
-│   ├── skills/             # analyze-requirements, execute-plan, author/generate-workflow,
-│   │                       # mcp-connector, validate-config (+ validator script)
-│   ├── workflows/          # _template.yml, README.md, registry.yml (ships routeless)
-│   ├── hooks/              # session_start.py — onboarding + opt-in core auto-pull
-│   ├── GLOSSARY.md         # Single source of truth for names
-│   ├── CORE.manifest       # Checksum lock over the shared core files
-│   └── settings.json       # Registers the SessionStart hook
-└── docs/                   # Docs-first source of truth
-    ├── documentation-standard.md
-    ├── product-roadmap.md  # Starts as the roadmap template — fill it in
-    ├── prd/  plan/  reference/  decisions/
-    ├── draft/              # Personal scratch space; agents ignore it
-    └── templates/          # PRD, plan, workflow, reference, roadmap, decision-log
+## Stack
+
+- **Backend:** Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2.0 (psycopg 3), Alembic
+- **AI:** OpenAI API (structured outputs, tool calling, vision, embeddings)
+- **Frontend:** React + TypeScript (Vite), Tailwind CSS v4
+- **Database:** PostgreSQL 18 + pgvector (`pgvector/pgvector:pg18-trixie`)
+- **Tooling:** uv, npm, ruff, pytest, ESLint, Vitest, GitHub Actions
+
+## Quick start (Docker)
+
+Requires Docker with Compose **v2.24 or newer** (the root `docker-compose.yml` uses `include` with `env_file`).
+
+```bash
+cp .env.example .env        # then set OPENAI_API_KEY in .env
+docker compose up --build
 ```
 
-## How Requests Are Routed
-
-| Request shape | What happens |
+| What | Where |
 |---|---|
-| Trivial (about 15 lines or fewer, one file) | Runs directly, without the orchestrator |
-| Build / implement / change / fix | **orchestrator** picks a route from `registry.yml`, or uses the built-in ad-hoc route (`executor` → self-review) |
-| Mentions a workflow / cycle / pipeline / route | **workflow-author** scaffolds, validates, and registers it |
-| Mentions an MCP server / connector | **mcp-connector** adds it to `.mcp.json` |
+| Web UI | http://localhost:8080 (change with `FRONTEND_PORT`) |
+| API (through the UI's proxy) | http://localhost:8080/api/health |
+| API docs (Swagger) | http://localhost:8080/api/docs |
 
-See [CLAUDE.md](CLAUDE.md) for the full policy and
-[.claude/workflows/README.md](.claude/workflows/README.md) for the workflow format.
+The backend waits for the database, applies the Alembic migrations (which enable the
+`vector` extension), then starts. The app and `/api/health` work without an
+`OPENAI_API_KEY`; the key is only needed once the AI features are used.
 
-## Docs-First Workflow
+Stop with `docker compose down`. Data lives in the `appfuxion_pgdata` and
+`appfuxion_uploads` volumes and survives `down` (use `down -v` only if you want to wipe it).
 
-1. Set the product direction in `docs/product-roadmap.md`.
-2. For each feature, write `docs/prd/[feature]-prd.md`, then `docs/plan/[feature]-plan.md`,
-   starting from `docs/templates/`.
-3. Implement against the PRD and plan. When the code diverges from the plan, add an entry
-   to `docs/decisions/NNNN-title.md`. Don't rewrite the PRD or plan to match.
-4. Keep the workflow and reference docs current, and run the session-close checklist in
-   [docs/documentation-standard.md](docs/documentation-standard.md).
+> If another Postgres already uses host port 5432, set `DB_PORT=5433` (or any free port)
+> in `.env`. Containers are unaffected: the backend always reaches the database on 5432
+> inside the Compose network.
 
-## Starting A New Project From This Harness
+## Local development (hot reload)
 
-1. Copy or clone this repo into the new project.
-2. Fill in [CLAUDE.project.md](CLAUDE.project.md) and `docs/product-roadmap.md`.
-3. Add project-only capabilities under namespaced names so they never collide with core:
-   - agent → `.claude/agents/proj.<name>.md`
-   - skill → `.claude/skills/proj-<name>/SKILL.md`
-   - workflow → `.claude/workflows/proj-<name>.yml`, plus a route in `registry.yml`
-4. Validate after any change under `.claude/`:
+Run only the database in Docker and the backend and frontend on your machine.
+Prerequisites: Docker, [uv](https://docs.astral.sh/uv/), Node.js 22+.
 
-   ```bash
-   python .claude/skills/validate-config/scripts/validate_config.py
-   ```
+```bash
+cp .env.example .env                                         # once
+docker compose --env-file .env -f db/docker-compose.yml up -d    # database only
 
-5. (Optional) To receive core updates, add this harness as the `upstream` remote. The
-   SessionStart hook then refreshes core files automatically:
+# Backend (http://localhost:8000, docs at /api/docs)
+cd backend
+uv sync                                  # installs Python 3.12 + dependencies
+uv run alembic upgrade head              # creates the schema + pgvector extension
+uv run uvicorn app.main:app --reload
 
-   ```bash
-   git remote add upstream <this-harness-repo-url>
-   ```
+# Frontend (http://localhost:5173, proxies /api to localhost:8000)
+cd frontend
+npm install
+npm run dev
+```
 
-**Never edit a core file** (the files listed in `.claude/CORE.manifest`) to change project
-behavior. Add a `proj.*` / `proj-*` capability instead. If a core file drifts, the validator
-reports a core-lock error. Harness maintainers who deliberately change core should
-regenerate the lock with `--update-core-manifest`.
+## Commands
+
+Run backend commands from `backend/` and frontend commands from `frontend/`.
+
+| Purpose | Command |
+|---|---|
+| Full stack | `docker compose up --build` |
+| Database only | `docker compose --env-file .env -f db/docker-compose.yml up -d` |
+| Install backend deps | `uv sync` |
+| Apply migrations | `uv run alembic upgrade head` |
+| New migration | `uv run alembic revision --autogenerate -m "<message>"` |
+| Run API | `uv run uvicorn app.main:app --reload` |
+| Backend tests | `uv run pytest` (needs the database; OpenAI is always faked) |
+| Lint / format | `uv run ruff check .` / `uv run ruff format .` |
+| Install frontend deps | `npm install` |
+| Run UI | `npm run dev` |
+| Frontend checks | `npm run lint` / `npm run typecheck` / `npm run test` / `npm run build` |
+
+Tests create and migrate a separate `appfuxion_test` database on the same server, so they
+never touch your development data, and they never call the real OpenAI API.
+
+## Configuration
+
+One root `.env` (git-ignored) drives Docker Compose and the backend. Every key is
+documented in [`.env.example`](.env.example): OpenAI key and model names, Postgres
+credentials and ports, `AGENT_MODE`, `MAX_UPLOAD_MB`, `STORAGE_DIR`, and more.
+
+## Project layout
+
+```text
+backend/        FastAPI app (app/core shared infrastructure, app/modules/<feature>), Alembic, tests
+frontend/       Vite + React + TypeScript + Tailwind UI
+db/             Standalone Postgres + pgvector compose file
+docs/           Roadmap, PRDs, plans, reference docs, decision log
+.github/        CI workflow
+ENGINEERING_NOTES.md   Architecture decisions, prompt design, limitations, production improvements
+```
+
+The full structural reference is [`docs/reference/folder-structure.md`](docs/reference/folder-structure.md).
+
+## Documentation
+
+- [`ENGINEERING_NOTES.md`](ENGINEERING_NOTES.md) - design decisions, limitations, and next steps
+- [`docs/product-roadmap.md`](docs/product-roadmap.md) - phases and feature status
+
+## Built on the Orchestral Harness
+
+This repository was built with an agent-orchestration harness for Claude Code that keeps
+work docs-first (PRD, then plan, then code). Its policy and routing rules live in
+[`CLAUDE.md`](CLAUDE.md), with the project-specific context in
+[`CLAUDE.project.md`](CLAUDE.project.md) and the agents, skills, and workflows under
+[`.claude/`](.claude/). None of it is needed to run the application.

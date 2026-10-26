@@ -30,7 +30,9 @@ Name documents as `[feature]-[type].md` where type matches the document's role:
 | `-plan.md` | Plan |
 | `-workflow.md` | Workflow |
 
-**Module PRDs and plans are numbered:** `docs/prd/NNNN-[module]-prd.md` and `docs/plan/NNNN-[module]-plan.md`, where `NNNN` is a 4-digit, zero-padded number assigned incrementally per module (`0001`, `0002`, …). A module's PRD and plan share the same number, which also names its git branch (`feature/NNNN-[module]`). Numbers are never reused or renumbered.
+**Module PRDs and plans are numbered:** `docs/prd/NNNN-[module]-prd.md` and `docs/plan/NNNN-[module]-plan.md`, where `NNNN` is a 4-digit, zero-padded number assigned incrementally per module (`0001`, `0002`, …). A module's PRD and plan share the same number, which also names its git branch (`feature/NNNN-[module]`). Numbers are never reused or renumbered. `0000` is reserved for the project setup / foundation; feature modules start at `0001`.
+
+The assessment brief and the build-order guide live in `docs/prd/source/` (`feature-map.md`). That folder is gitignored: the brief is confidential and the feature map is a local guideline. The roadmap remains the status source of truth.
 
 The product roadmap is `product-roadmap.md` (one per project). Reference docs live in `docs/reference/` with descriptive names such as `folder-structure.md`. Decision log entries use `NNNN-short-title.md`.
 
@@ -48,6 +50,7 @@ A feature may have a combined Intent/Plan document or separate PRD and plan file
 | `docs/reference/*.md` | Reference |
 | `docs/decisions/*.md` | Decision log |
 | `docs/templates/*.md` | Templates |
+| `docs/prd/source/*` (gitignored) | Source brief + local feature map |
 
 ## Folder Layout
 
