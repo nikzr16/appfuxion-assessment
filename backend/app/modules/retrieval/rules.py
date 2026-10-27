@@ -9,6 +9,8 @@ import unicodedata
 from collections.abc import Sequence
 from decimal import ROUND_HALF_UP, Decimal
 
+from rapidfuzz import fuzz
+
 from app.modules.retrieval.schema import CARD_VERSION, HistoryStats
 from app.modules.structured_extraction.schema import InvoiceData
 
@@ -19,6 +21,9 @@ CARD_MAX_ITEM_CHARS = 2000
 OUTLIER_MIN_HISTORY = 5
 OUTLIER_IQR_FACTOR = Decimal("1.5")
 OUTLIER_MIN_GAP = Decimal("0.25")
+# A tax-ID match also needs vendor names at least this similar (rapidfuzz token-set ratio,
+# 0-100; decision 0012): one tax ID on invoices from different vendors is an extraction error.
+VENDOR_NAME_MIN_SIMILARITY = 80
 
 _CENT = Decimal("0.01")
 # Removed from the end of a normalised vendor name, repeatedly ("abc sdn bhd" -> "abc").
@@ -74,6 +79,15 @@ def normalise_vendor_name(value: str | None) -> str | None:
                 changed = True
                 break
     return text or None
+
+
+def similar_vendor_names(a: str | None, b: str | None) -> bool:
+    """Whether two normalised vendor names can belong to one vendor; a missing name never
+    vetoes. Token-set ratio, so "acme" and "acme trading" match (one name contains the other).
+    """
+    if a is None or b is None:
+        return True
+    return fuzz.token_set_ratio(a, b) >= VENDOR_NAME_MIN_SIMILARITY
 
 
 def normalise_invoice_number(value: str | None) -> str | None:

@@ -20,6 +20,8 @@ class Filters:
     vendor_name_key: str | None = None
     vendor_tax_key: str | None = None
     vendor: bool = False  # filter by the vendor keys above (PRD D4 rule)
+    # Name keys a tax-ID match accepts besides rows without a name; ``None`` accepts any name.
+    vendor_tax_names: tuple[str, ...] | None = None
     invoice_number_key: str | None = None
     invoice_number_prefix: bool = False
     date_from: date | None = None
@@ -32,11 +34,19 @@ class Filters:
     exclude_document_id: uuid.UUID | None = None
 
 
-def vendor_condition(name_key: str | None, tax_key: str | None) -> ColumnElement[bool]:
-    """Same tax ID, or same normalised name unless both tax IDs are set and differ."""
+def vendor_condition(
+    name_key: str | None, tax_key: str | None, tax_names: tuple[str, ...] | None = None
+) -> ColumnElement[bool]:
+    """Same tax ID (with a name in ``tax_names`` or no name, when given), or same normalised
+    name unless both tax IDs are set and differ."""
     conditions: list[ColumnElement[bool]] = []
     if tax_key:
-        conditions.append(Row.vendor_tax_key == tax_key)
+        by_tax = Row.vendor_tax_key == tax_key
+        if tax_names is not None:
+            by_tax = and_(
+                by_tax, or_(Row.vendor_name_key.is_(None), Row.vendor_name_key.in_(tax_names))
+            )
+        conditions.append(by_tax)
     if name_key:
         by_name = Row.vendor_name_key == name_key
         if tax_key:
@@ -50,7 +60,11 @@ def vendor_condition(name_key: str | None, tax_key: str | None) -> ColumnElement
 def _where(filters: Filters) -> list[ColumnElement[bool]]:
     where: list[ColumnElement[bool]] = []
     if filters.vendor:
-        where.append(vendor_condition(filters.vendor_name_key, filters.vendor_tax_key))
+        where.append(
+            vendor_condition(
+                filters.vendor_name_key, filters.vendor_tax_key, filters.vendor_tax_names
+            )
+        )
     if filters.invoice_number_key:
         if filters.invoice_number_prefix:
             where.append(Row.invoice_number_key.startswith(filters.invoice_number_key))
@@ -166,6 +180,17 @@ def vendor_names_like(db: Session, text: str, *, limit: int) -> list[str]:
         .group_by(Row.vendor)
         .order_by(func.count().desc(), Row.vendor)
         .limit(limit)
+    )
+    return [name for name in db.execute(statement).scalars().all() if name]
+
+
+def vendor_names_for_tax(db: Session, tax_key: str) -> list[str]:
+    """Distinct vendor name keys indexed under one tax ID."""
+    statement = (
+        select(Row.vendor_name_key)
+        .where(Row.vendor_tax_key == tax_key, Row.vendor_name_key.is_not(None))
+        .distinct()
+        .order_by(Row.vendor_name_key)
     )
     return [name for name in db.execute(statement).scalars().all() if name]
 

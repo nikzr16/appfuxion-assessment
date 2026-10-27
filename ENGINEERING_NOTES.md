@@ -486,8 +486,11 @@ feature number (`0000`, `0001`, ...).
   their run scored it.
 - **Vendor identity is exact and explainable.** Same normalised tax ID, or same normalised
   name (case, punctuation and suffixes like Sdn Bhd / Ltd removed) unless both documents have
-  different tax IDs. No fuzzy matching: a duplicate warning on the wrong vendor is worse than
-  a missed one. The UI says which rule matched.
+  different tax IDs. A tax-ID match also needs a similar name when both have one (rapidfuzz
+  token-set ratio ≥ 80, decision 0012), so one SST number printed on different vendors'
+  invoices does not merge them. Fuzzy matching only vetoes, it never joins vendors: a
+  duplicate warning on the wrong vendor is worse than a missed one. A tax ID typed into
+  search still finds every invoice under it. The UI says which rule matched.
 - **Vendor-history checks are validation issues.** `check_vendor_history` (deterministic, no
   LLM) compares the document with the same vendor's invoices **uploaded before it**:
   `duplicate_invoice_number` (warning; the message names the earlier file, date and total),
@@ -817,11 +820,9 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
 
 **0010 - Retrieval**
 - Vendor matching is exact after normalisation: "ABC Supply" and "ABC Supplies" are two
-  vendors unless they share a tax ID. Tax ID wins over the name, so a wrongly extracted tax ID
-  (e.g. the buyer's SST number) or invoices from a template that prints the same number for
-  every vendor merge different vendors. The demo data shows this: four sample vendors share
-  one SST number, so their invoices appear together in one history and the Query Agent can
-  quote another vendor's total as "the highest for this vendor".
+  vendors unless they share a tax ID. A shared tax ID merges only similar names (decision
+  0012), so a vendor that changed its trading name under one tax ID starts a new history, and
+  a wrongly extracted tax ID still merges two vendors whose names happen to be similar.
 - History and the checks use only what is indexed: documents from before 0010 need the
   back-fill, and a document whose run failed is not history. "Earlier" means uploaded earlier,
   not an earlier invoice date.
@@ -954,8 +955,8 @@ retries and rate-limit handling, database backups)._
 
 **0010 - Retrieval**
 - Vendor master data: a `vendors` table with confirmed tax IDs and name aliases, fuzzy
-  suggestions ("is this the same vendor?") confirmed by a person, and a check that a tax-ID
-  match also has a similar name before merging histories.
+  suggestions ("is this the same vendor?") confirmed by a person, replacing the name
+  similarity threshold of decision 0012 with confirmed aliases.
 - Chunked retrieval (one vector per line item or page) for item-level questions, a reranker
   for the top results, and an evaluation set of questions with expected invoices to tune
   `MIN_SIMILARITY` and top-k.

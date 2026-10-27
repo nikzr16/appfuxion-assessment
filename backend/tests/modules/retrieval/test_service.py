@@ -194,7 +194,7 @@ def test_only_earlier_documents_count_as_history(
 def test_vendors_match_by_tax_id_and_never_across_different_tax_ids(
     db_session: Session, storage: LocalStorage, seed
 ) -> None:
-    seed(index=1, vendor="ABC Trading", vendor_tax_id="C-1", invoice_number="A")
+    seed(index=1, vendor="ABC Supplies (M)", vendor_tax_id="C-1", invoice_number="A")
     seed(index=2, vendor="ABC Supplies", vendor_tax_id="C-2", invoice_number="B")
     check = _check(
         db_session,
@@ -203,9 +203,35 @@ def test_vendors_match_by_tax_id_and_never_across_different_tax_ids(
         vendor_tax_id="C1",
         invoice_number="B",
     )
-    # Matched by tax ID (C1) only; the same-name vendor with tax ID C2 is someone else.
+    # Matched by tax ID (C1) with a similar name; the same-name vendor with C2 is someone else.
     assert check.match_rule is MatchRule.TAX_ID and check.earlier_invoices == 1
     assert [i.code for i in check.issues] == []
+
+
+def test_a_shared_tax_id_needs_a_similar_vendor_name(
+    db_session: Session, storage: LocalStorage, seed
+) -> None:
+    # Decision 0012: one tax ID on invoices from different vendors is an extraction error.
+    seed(index=1, vendor="Brightlane Logistics", vendor_tax_id="W-1", invoice_number="A")
+    seed(index=2, vendor="Acme Trading", vendor_tax_id="W-1", invoice_number="B")
+    seed(index=3, vendor=None, vendor_tax_id="W-1", invoice_number="C")
+    check = _check(
+        db_session,
+        _new_document(db_session, storage),
+        vendor="Acme Trading Sdn Bhd",
+        vendor_tax_id="W1",
+        invoice_number="A",
+    )
+    # Acme's own invoice and the one without a name; not Brightlane's invoice "A".
+    assert check.match_rule is MatchRule.TAX_ID and check.earlier_invoices == 2
+    assert [i.code for i in check.issues] == []
+    other = _check(
+        db_session,
+        _new_document(db_session, storage, index=101),
+        vendor="Cloudnine Hosting",
+        vendor_tax_id="W1",
+    )
+    assert other.earlier_invoices == 1  # only the invoice without a name
 
 
 def test_an_amount_far_outside_the_vendors_range_is_an_outlier(
@@ -369,6 +395,18 @@ def test_vendor_history_resolves_invoice_numbers_and_vendor_names(
     assert caught.value.candidates == ["ABC Supplies Sdn Bhd"]
     with pytest.raises(VendorNotFoundError):
         retrieval_service.vendor_history(db_session, invoice_number="nope-1")
+
+
+def test_vendor_history_keeps_vendors_that_share_a_tax_id_apart(db_session: Session, seed) -> None:
+    acme = seed(index=1, vendor="Acme Trading", vendor_tax_id="W-1", total_amount="100")
+    seed(index=2, vendor="Acme Trading", vendor_tax_id="W-1", total_amount="300")
+    seed(index=3, vendor="Brightlane Logistics", vendor_tax_id="W-1", total_amount="9000")
+    history = retrieval_service.vendor_history(db_session, document_id=acme)
+    assert history.match_rule is MatchRule.TAX_ID
+    assert len(history.invoices) == 2 and history.stats.max == Decimal("300.00")
+    # A typed tax ID is one value, not a name: every invoice under it matches.
+    by_tax_id = retrieval_service.vendor_history(db_session, vendor="W-1")
+    assert by_tax_id.stats.count == 3
 
 
 def test_vendor_history_of_an_unindexed_document_is_409(
