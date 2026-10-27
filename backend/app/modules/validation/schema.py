@@ -38,6 +38,10 @@ class IssueCode(StrEnum):
     DUE_BEFORE_INVOICE = "due_before_invoice"
     DATE_IN_FUTURE = "date_in_future"
     DATE_TOO_OLD = "date_too_old"
+    # Vendor history (feature 0010): raised by ``retrieval``, merged into the report.
+    DUPLICATE_INVOICE_NUMBER = "duplicate_invoice_number"
+    AMOUNT_OUTLIER = "amount_outlier"
+    NEW_VENDOR = "new_vendor"
 
 
 class ValidationIssue(BaseModel):

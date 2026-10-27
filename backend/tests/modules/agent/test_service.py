@@ -78,7 +78,7 @@ def test_a_scripted_run_completes_the_run_and_the_document(
     assert run.summary == SUMMARY
     assert run.error_code is None and run.finished_at is not None
     # 6 agent turns + 1 summary call; the structured-extraction call is counted on its own row
-    assert (run.prompt_tokens, run.completion_tokens) == (70, 35)
+    assert (run.prompt_tokens, run.completion_tokens) == (90, 45)
     assert run.result == {
         "document_id": str(document_id),
         "structured_data": invoice().model_dump(mode="json"),
@@ -106,6 +106,8 @@ def test_every_tool_call_is_recorded_without_raw_text(
         "extract_structured_data",
         "check_grounding",
         "validate_invoice",
+        "check_vendor_history",
+        "search_similar_invoices",
         "generate_summary",
     ]
     for index, step in enumerate(run.steps):
@@ -119,7 +121,7 @@ def test_every_tool_call_is_recorded_without_raw_text(
     assert set(run.steps[0]["result"]) == {"method", "page_count", "characters"}
     assert run.steps[1]["result"]["available"] is True  # tables: counts only, no cell text
     assert run.steps[3]["result"]["ungrounded"] == 0
-    assert run.steps[5]["result"] == {"summary": SUMMARY}
+    assert run.steps[7]["result"] == {"summary": SUMMARY}
     stored = json.dumps(run.steps)  # values may appear, printed lines never do
     assert all(line not in stored for line in INVOICE_LINES[1:])
 
@@ -133,7 +135,7 @@ def test_the_agent_gets_its_prompts_tools_and_no_document_text(
     run_agent(document_id, fake)
 
     agent_calls = [call for call in fake.calls if call.tools]
-    assert len(agent_calls) == 6
+    assert len(agent_calls) == 8
     first = agent_calls[0]
     assert first.temperature == 0
     assert first.messages == [
@@ -189,6 +191,8 @@ def test_a_summary_before_validation_is_refused_and_the_run_recovers(
             tool_turn("check_grounding"),
             tool_turn("generate_summary"),
             tool_turn("validate_invoice"),
+            tool_turn("check_vendor_history"),
+            tool_turn("search_similar_invoices"),
             tool_turn("generate_summary"),
             SUMMARY,
         ]
@@ -201,7 +205,12 @@ def test_a_summary_before_validation_is_refused_and_the_run_recovers(
     refused = run.steps[4]
     assert (refused["tool"], refused["status"]) == ("generate_summary", "error")
     assert refused["error"]["code"] == "validation_required"
-    assert [step["tool"] for step in run.steps[5:]] == ["validate_invoice", "generate_summary"]
+    assert [step["tool"] for step in run.steps[5:]] == [
+        "validate_invoice",
+        "check_vendor_history",
+        "search_similar_invoices",
+        "generate_summary",
+    ]
 
 
 def test_a_foreign_currency_total_is_converted_into_the_result(
@@ -217,7 +226,9 @@ def test_a_foreign_currency_total_is_converted_into_the_result(
             invoice(currency="USD"),
             tool_turn("check_grounding"),
             tool_turn("validate_invoice"),
+            tool_turn("check_vendor_history"),
             tool_turn(("convert_currency", {"to_currency": "MYR"})),
+            tool_turn("search_similar_invoices"),
             tool_turn("generate_summary"),
             SUMMARY,
         ]
@@ -440,7 +451,7 @@ def test_list_runs_is_newest_first(
 
     assert [run.trigger for run in runs] == ["reprocess", "upload"]
     assert [run.status for run in runs] == [RunStatus.COMPLETED, RunStatus.FAILED]
-    assert len(runs[0].steps) == 6
+    assert len(runs[0].steps) == 8
 
 
 # -- Layering -------------------------------------------------------------------------------

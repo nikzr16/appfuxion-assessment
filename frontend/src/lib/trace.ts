@@ -54,6 +54,7 @@ const PURPOSE_LABEL: Record<string, string> = {
   grounding_retry: "Grounding retry",
   summary: "Summary",
   embedding: "Embedding",
+  query_embedding: "Question embedding",
 };
 
 /** `structured_extraction` → `Structured extraction`; unknown purposes stay readable. */

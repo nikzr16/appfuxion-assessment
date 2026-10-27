@@ -2,6 +2,7 @@ import { BarChart3, FileStack, Upload } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router";
 
+import { ChatLauncher } from "../../features/chat/ChatLauncher.tsx";
 import { cx } from "../../lib/cx.ts";
 import HealthBadge from "../HealthBadge.tsx";
 import { LiveRegion } from "../ui/LiveRegion.tsx";
@@ -87,10 +88,11 @@ export function AppLayout() {
         </main>
 
         <footer className="border-t border-border">
-          <p className="mx-auto max-w-6xl px-4 py-5 text-xs text-fg-subtle sm:px-6">
+          <p className="mx-auto max-w-6xl px-4 pt-5 pb-24 text-xs text-fg-subtle sm:px-6 sm:pr-40 sm:pb-5">
             Data is extracted by AI and checked by code. Verify important values against the original document.
           </p>
         </footer>
+        <ChatLauncher />
       </div>
     </LiveRegion>
   );

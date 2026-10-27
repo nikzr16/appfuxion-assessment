@@ -184,3 +184,32 @@ describe("MetricsPage — vision (feature 0009)", () => {
     expect(within(section).getByText(/No document in this window has been analysed for tables yet/)).toBeInTheDocument();
   });
 });
+
+describe("MetricsPage — retrieval (feature 0010)", () => {
+  it("shows the index, the vendor-history flags and the questions", async () => {
+    const retrieval = {
+      documents_indexed: 12,
+      documents_embedded: 11,
+      documents_not_embedded: 1,
+      duplicate_flags: 2,
+      outlier_flags: 1,
+      new_vendor_flags: 4,
+      conversations: 3,
+      questions: 7,
+      questions_failed: 1,
+      questions_unanswerable: 2,
+      questions_unverified: 0,
+      avg_question_ms: 4_200,
+      avg_cost_per_question: "0.001200",
+    };
+    mockApi({ ...HEALTH, "GET /metrics/summary": ok(makeMetrics({ retrieval })) });
+    renderApp("/metrics");
+
+    const section = await screen.findByRole("region", { name: "Retrieval & Ask AI" });
+    expect(within(section).getByText("1 without an embedding")).toBeInTheDocument();
+    expect(within(section).getByText("2 duplicates, 1 unusual amount")).toBeInTheDocument();
+    expect(within(section).getByText("3 chats · 1 failed · 2 off-topic")).toBeInTheDocument();
+    expect(within(section).getByText("4.2 s")).toBeInTheDocument();
+    expect(within(section).getByText("$0.0012 per question")).toBeInTheDocument();
+  });
+});

@@ -1,9 +1,10 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.modules.guardrails.schema import ConfidenceLabel, ConfidenceReport
 from app.modules.structured_extraction.schema import InvoiceData
@@ -105,3 +106,89 @@ class RunStats(BaseModel):
     avg_ms: int | None
     p50_ms: int | None
     p95_ms: int | None
+
+
+# -- Query Agent (feature 0010) -------------------------------------------------------------
+
+QUESTION_MIN_CHARS = 3
+QUESTION_MAX_CHARS = 500
+
+
+class QueryRequest(BaseModel):
+    question: str = Field(min_length=QUESTION_MIN_CHARS, max_length=QUESTION_MAX_CHARS)
+    conversation_id: uuid.UUID | None = None
+    # The document the user is looking at, so "this invoice" can be resolved.
+    document_id: uuid.UUID | None = None
+
+    @field_validator("question", mode="before")
+    @classmethod
+    def _strip(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+class Citation(BaseModel):
+    document_id: uuid.UUID
+    filename: str
+    vendor: str | None
+    invoice_number: str | None
+    invoice_date: date | None
+    total_amount: Decimal | None
+    currency: str | None
+    needs_review: bool | None
+
+
+class QueryUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    embedding_tokens: int
+
+
+class QueryTurn(BaseModel):
+    turn_id: uuid.UUID
+    turn: int
+    question: str
+    document_id: uuid.UUID | None
+    status: RunStatus
+    answer: str | None
+    answerable: bool | None
+    numbers_verified: bool | None
+    citations: list[Citation]
+    steps: list[ToolStep]
+    error_code: str | None
+    error: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    duration_ms: int | None
+
+
+class QueryResponse(QueryTurn):
+    conversation_id: uuid.UUID
+    usage: QueryUsage
+
+
+class ConversationRead(BaseModel):
+    conversation_id: uuid.UUID
+    created_at: datetime
+    turns: list[QueryTurn]
+
+
+class QuerySuggestions(BaseModel):
+    indexed_documents: int
+    questions: list[str]
+
+
+class QueryStats(BaseModel):
+    conversations: int
+    questions: int
+    questions_failed: int
+    questions_unanswerable: int
+    questions_unverified: int
+    avg_question_ms: int | None
+
+
+class IssueCounts(BaseModel):
+    """Completed runs whose validation contains each vendor-history code (metrics)."""
+
+    duplicate_flags: int
+    outlier_flags: int
+    new_vendor_flags: int

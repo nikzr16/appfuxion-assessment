@@ -25,6 +25,8 @@ from app.modules.agent import prompts
 from app.modules.agent.runner import NO_ARGUMENTS, Tool, ToolError, ToolHandler
 from app.modules.guardrails import service as guardrails_service
 from app.modules.guardrails.schema import ConfidenceReport, GroundingReport
+from app.modules.retrieval import service as retrieval_service
+from app.modules.retrieval.schema import HistoryCheck, PreparedEmbedding, SimilarInvoices
 from app.modules.structured_extraction import service as structured_extraction_service
 from app.modules.structured_extraction.schema import DocumentType, InvoiceData
 from app.modules.text_extraction import service as text_extraction_service
@@ -47,6 +49,8 @@ RECOVERABLE_CODES = frozenset(
         "structured_data_missing",
         "grounding_required",
         "validation_required",
+        "history_check_required",
+        "similar_search_required",
         "conversion_not_needed",
         "unsupported_currency",
         "invalid_amount",
@@ -58,6 +62,8 @@ RECOVERABLE_CODES = frozenset(
 MAX_SUMMARY_CHARS = 1500
 # Fields the summary must ask the reader to verify, key fields first (PRD 0008 D8).
 MAX_REVIEW_FIELDS = 6
+# Earlier similar invoices handed to the summary (PRD 0010 D6).
+SUMMARY_SIMILAR = 3
 
 
 @dataclass
@@ -80,6 +86,10 @@ class DocumentToolContext:
     confidence: ConfidenceReport | None = None
     validation: ValidationReport | None = None
     conversion: ConversionResult | None = None
+    # Vendor history and similar invoices (feature 0010); reset with the validation.
+    history: HistoryCheck | None = None
+    similar: SimilarInvoices | None = None
+    embedding: PreparedEmbedding | None = None
     summary: str | None = None
     _text_forced: bool = False
     _tables_forced: bool = False
@@ -139,6 +149,17 @@ def build_document_tools(ctx: DocumentToolContext) -> list[Tool]:
             handler=_guarded(lambda _args: _validate_invoice(ctx)),
         ),
         Tool(
+            name="check_vendor_history",
+            description=(
+                "Compare the invoice with the earlier invoices from the same vendor "
+                "(deterministic code): duplicate invoice number, an amount far outside the "
+                "vendor's usual range, or a first invoice from this vendor. Adds any findings "
+                "to the validation report. Requires validate_invoice; always call it."
+            ),
+            parameters=NO_ARGUMENTS,
+            handler=_guarded(lambda _args: _check_vendor_history(ctx)),
+        ),
+        Tool(
             name="convert_currency",
             description=(
                 "Convert the extracted total to another currency with a static, dated rate "
@@ -159,10 +180,20 @@ def build_document_tools(ctx: DocumentToolContext) -> list[Tool]:
             handler=_guarded(lambda args: _convert_currency(ctx, args)),
         ),
         Tool(
+            name="search_similar_invoices",
+            description=(
+                "Find the earlier invoices most similar to this one (vector search). "
+                "Requires check_vendor_history; always call it before generate_summary."
+            ),
+            parameters=NO_ARGUMENTS,
+            handler=_guarded(lambda _args: _search_similar_invoices(ctx)),
+        ),
+        Tool(
             name="generate_summary",
             description=(
-                "Write the final plain-text summary from the extracted fields and the "
-                "validation report. Requires validate_invoice. Call it last."
+                "Write the final plain-text summary from the extracted fields, the "
+                "validation report and the similar invoices. Requires validate_invoice, "
+                "check_vendor_history and search_similar_invoices. Call it last."
             ),
             parameters=NO_ARGUMENTS,
             handler=_guarded(lambda _args: _generate_summary(ctx)),
@@ -230,7 +261,7 @@ def _extract_structured_data(ctx: DocumentToolContext) -> dict[str, Any]:
     # A new extraction must be grounded (and validated) again (PRD 0008 D1).
     ctx.grounding = None
     ctx.confidence = None
-    ctx.validation = None
+    _reset_validation(ctx)
     return extraction.data.model_dump(mode="json")
 
 
@@ -262,6 +293,7 @@ def _validate_invoice(ctx: DocumentToolContext) -> dict[str, Any]:
     data = _require_structured(ctx, "validate_invoice")
     if ctx.grounding is None:
         raise ToolError("grounding_required", "Call check_grounding before validate_invoice.")
+    _reset_validation(ctx)
     ctx.validation = validation_service.validate_invoice(data, today=ctx.today)
     ctx.confidence = guardrails_service.score_confidence(data, ctx.grounding, ctx.validation)
     result = ctx.validation.model_dump(mode="json")
@@ -269,6 +301,70 @@ def _validate_invoice(ctx: DocumentToolContext) -> dict[str, Any]:
         result["needs_review"] = ctx.confidence.needs_review
         result["review_fields"] = ctx.confidence.review_fields
     return result
+
+
+def _reset_validation(ctx: DocumentToolContext) -> None:
+    """A new validation report needs the vendor history and similar invoices again."""
+    ctx.validation = None
+    ctx.history = None
+    ctx.similar = None
+    ctx.embedding = None
+
+
+def _check_vendor_history(ctx: DocumentToolContext) -> dict[str, Any]:
+    data = _require_structured(ctx, "check_vendor_history")
+    if ctx.validation is None or ctx.grounding is None:
+        raise ToolError("validation_required", "Call validate_invoice before check_vendor_history.")
+    check = retrieval_service.check_vendor_history(
+        ctx.db, ctx.document_id, data, base_currency=ctx.base_currency
+    )
+    ctx.validation = retrieval_service.merge_report(ctx.validation, check)
+    ctx.confidence = guardrails_service.score_confidence(data, ctx.grounding, ctx.validation)
+    ctx.history = check
+    ctx.similar = None
+    result = check.model_dump(mode="json")
+    result["status"] = ctx.validation.status.value
+    if ctx.confidence is not None:
+        result["needs_review"] = ctx.confidence.needs_review
+        result["review_fields"] = ctx.confidence.review_fields
+    return result
+
+
+def _search_similar_invoices(ctx: DocumentToolContext) -> dict[str, Any]:
+    data = _require_structured(ctx, "search_similar_invoices")
+    if ctx.history is None:
+        raise ToolError(
+            "history_check_required",
+            "Call check_vendor_history before search_similar_invoices.",
+        )
+    if data.document_type is DocumentType.UNKNOWN:
+        ctx.similar = SimilarInvoices(document_id=ctx.document_id, available=False, items=[])
+        return {"skipped": True, "reason": "The document is not an invoice or receipt."}
+    ctx.embedding = retrieval_service.prepare_embedding(ctx.db, ctx.llm, ctx.document_id, data)
+    ctx.similar = retrieval_service.similar_to(
+        ctx.db, ctx.document_id, ctx.embedding.vector, k=SUMMARY_SIMILAR, earlier_only=True
+    )
+    return {
+        "available": ctx.similar.available,
+        "reused_embedding": ctx.embedding.reused,
+        "items": _similar_items(ctx.similar),
+    }
+
+
+def _similar_items(similar: SimilarInvoices | None) -> list[dict[str, Any]]:
+    if similar is None:
+        return []
+    return [
+        {
+            "vendor": item.vendor,
+            "invoice_number": item.invoice_number,
+            "invoice_date": item.invoice_date.isoformat() if item.invoice_date else None,
+            "total_amount": str(item.total_amount) if item.total_amount is not None else None,
+            "currency": item.currency,
+            "similarity": item.similarity,
+        }
+        for item in similar.items
+    ]
 
 
 def _convert_currency(ctx: DocumentToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -294,6 +390,14 @@ def _convert_currency(ctx: DocumentToolContext, arguments: dict[str, Any]) -> di
 def _generate_summary(ctx: DocumentToolContext) -> dict[str, Any]:
     if ctx.validation is None or ctx.structured is None:
         raise ToolError("validation_required", "Call validate_invoice before generate_summary.")
+    if ctx.history is None:
+        raise ToolError(
+            "history_check_required", "Call check_vendor_history before generate_summary."
+        )
+    if ctx.similar is None:
+        raise ToolError(
+            "similar_search_required", "Call search_similar_invoices before generate_summary."
+        )
     if ctx.structured.document_type is DocumentType.UNKNOWN:
         ctx.summary = prompts.UNKNOWN_SUMMARY  # PRD D5: nothing to summarise, no LLM call
         return {"summary": ctx.summary}
@@ -305,6 +409,7 @@ def _generate_summary(ctx: DocumentToolContext) -> dict[str, Any]:
         "validation": ctx.validation.model_dump(mode="json"),
         "conversion": ctx.conversion.model_dump(mode="json") if ctx.conversion else None,
         "base_currency": ctx.base_currency,
+        "similar_invoices": _similar_items(ctx.similar),
         "review": [
             {"field": field_name(path), "reason": _review_reason(ctx.confidence, path)}
             for path in review
@@ -375,6 +480,17 @@ _CODE_KEYWORDS: dict[IssueCode, tuple[str, ...]] = {
     IssueCode.NEGATIVE_AMOUNT: ("negative", "credit", "refund"),
     IssueCode.DUE_BEFORE_INVOICE: ("due",),
     IssueCode.DATE_IN_FUTURE: ("future",),
+    IssueCode.DUPLICATE_INVOICE_NUMBER: ("duplicate", "already", "same invoice number"),
+    IssueCode.AMOUNT_OUTLIER: (
+        "unusual",
+        "usual",
+        "range",
+        "higher",
+        "lower",
+        "above",
+        "below",
+        "outlier",
+    ),
 }
 _LINE_FIELD = re.compile(r"line_items\[(\d+)\]")
 

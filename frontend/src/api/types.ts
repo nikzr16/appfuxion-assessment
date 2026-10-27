@@ -387,6 +387,8 @@ export interface MetricsSummary {
   guardrails?: GuardrailMetrics;
   /** Feature 0009. */
   vision?: VisionMetrics;
+  /** Feature 0010. */
+  retrieval?: RetrievalMetrics;
   prices_as_of: string;
 }
 
@@ -412,4 +414,146 @@ export interface GuardrailMetrics {
   grounding_rate: number | null;
   grounding_retry_extractions: number;
   transient_retries: number;
+}
+
+// -- Retrieval + Query Agent (feature 0010) --------------------------------------------------
+
+export interface IndexEntry {
+  document_id: string;
+  filename: string;
+  uploaded_at: string;
+  run_id: string | null;
+  document_type: DocumentType;
+  vendor: string | null;
+  vendor_tax_id: string | null;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  currency: string | null;
+  total_amount: string | null;
+  /** The total in `base_currency` (static rate table); null when it cannot be converted. */
+  total_base: string | null;
+  base_currency: string;
+  needs_review: boolean | null;
+  embedded: boolean;
+}
+
+export interface InvoiceHit extends IndexEntry {
+  /** Cosine similarity 0-1; null for exact (identifier / filter) matches. */
+  similarity: number | null;
+}
+
+export interface SimilarInvoices {
+  document_id: string;
+  /** false when the document has no embedding (the call failed). */
+  available: boolean;
+  items: InvoiceHit[];
+}
+
+export type MatchRule = "tax_id" | "name";
+
+export interface HistoryStats {
+  base_currency: string;
+  count: number;
+  with_total: number;
+  skipped_currencies: string[];
+  sum: string | null;
+  min: string | null;
+  max: string | null;
+  mean: string | null;
+  median: string | null;
+  q1: string | null;
+  q3: string | null;
+  low_fence: string | null;
+  high_fence: string | null;
+}
+
+export interface TargetPosition {
+  document_id: string;
+  total_base: string | null;
+  diff_vs_median: string | null;
+  diff_pct: string | null;
+  rank: number | null;
+  position: "below" | "within" | "above" | null;
+}
+
+export interface VendorHistory {
+  document_id: string | null;
+  vendor: string | null;
+  match_rule: MatchRule | null;
+  base_currency: string;
+  /** Newest invoice date first; includes the document itself. */
+  invoices: IndexEntry[];
+  earlier: number;
+  later: number;
+  /** Statistics of the vendor's other invoices. */
+  stats: HistoryStats;
+  target: TargetPosition | null;
+  duplicates: IndexEntry[];
+}
+
+export interface Citation {
+  document_id: string;
+  filename: string;
+  vendor: string | null;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  total_amount: string | null;
+  currency: string | null;
+  needs_review: boolean | null;
+}
+
+export interface QueryRequest {
+  question: string;
+  conversation_id?: string | null;
+  document_id?: string | null;
+}
+
+export interface QueryTurn {
+  turn_id: string;
+  turn: number;
+  question: string;
+  document_id: string | null;
+  status: RunStatus;
+  answer: string | null;
+  answerable: boolean | null;
+  numbers_verified: boolean | null;
+  citations: Citation[];
+  steps: ToolStep[];
+  error_code: string | null;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+}
+
+export interface QueryResponse extends QueryTurn {
+  conversation_id: string;
+  usage: { prompt_tokens: number; completion_tokens: number; embedding_tokens: number };
+}
+
+export interface ConversationRead {
+  conversation_id: string;
+  created_at: string;
+  turns: QueryTurn[];
+}
+
+export interface QuerySuggestions {
+  indexed_documents: number;
+  questions: string[];
+}
+
+export interface RetrievalMetrics {
+  documents_indexed: number;
+  documents_embedded: number;
+  documents_not_embedded: number;
+  duplicate_flags: number;
+  outlier_flags: number;
+  new_vendor_flags: number;
+  conversations: number;
+  questions: number;
+  questions_failed: number;
+  questions_unanswerable: number;
+  questions_unverified: number;
+  avg_question_ms: number | null;
+  avg_cost_per_question: string | null;
 }

@@ -40,6 +40,7 @@ import { ReprocessButton } from "./ReprocessButton.tsx";
 import { StructuredData, type LocateHandler } from "./StructuredData.tsx";
 import { SummaryCard } from "./SummaryCard.tsx";
 import { TraceSection } from "./TraceSection.tsx";
+import { VendorHistorySection } from "./VendorHistorySection.tsx";
 import { splitError } from "./labels.ts";
 
 function BackLink() {
@@ -219,6 +220,7 @@ function CompletedView({
           {result.data.conversion && <ConversionCard conversion={result.data.conversion} />}
         </div>
       </div>
+      {data.document_type !== "unknown" && <VendorHistorySection documentId={documentId} />}
     </div>
   );
 }

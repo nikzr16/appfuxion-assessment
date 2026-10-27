@@ -4,6 +4,7 @@ import type {
   AgentResult,
   AgentRunRead,
   ClientConfig,
+  ConversationRead,
   DocumentList,
   DocumentRead,
   DocumentStatus,
@@ -13,6 +14,11 @@ import type {
   ExtractionResponse,
   LayoutResponse,
   MetricsSummary,
+  QueryRequest,
+  QueryResponse,
+  QuerySuggestions,
+  SimilarInvoices,
+  VendorHistory,
 } from "./types.ts";
 
 const API_BASE: string = import.meta.env.VITE_API_BASE ?? "/api";
@@ -199,4 +205,37 @@ export function getTrace(id: string, runId?: string): Promise<DocumentTrace> {
 export function getMetrics(days?: number): Promise<MetricsSummary> {
   const query = days ? `?${new URLSearchParams({ days: String(days) }).toString()}` : "";
   return request<MetricsSummary>(`/metrics/summary${query}`);
+}
+
+// -- Retrieval + Ask AI (0010) -------------------------------------------------------------
+
+/** Similar indexed invoices, or `null` when the document is not indexed (409 `not_indexed`). */
+export function getSimilar(id: string, limit = 5): Promise<SimilarInvoices | null> {
+  const query = new URLSearchParams({ limit: String(limit) }).toString();
+  return nullOnConflict(request<SimilarInvoices>(`/documents/${encodeURIComponent(id)}/similar?${query}`));
+}
+
+/** The document's vendor history, or `null` when it is not indexed (409 `not_indexed`). */
+export function getVendorHistory(id: string): Promise<VendorHistory | null> {
+  return nullOnConflict(request<VendorHistory>(`/documents/${encodeURIComponent(id)}/vendor-history`));
+}
+
+/** `POST /api/query`: one question; 502 `query_failed` / `llm_*` are thrown. */
+export function askQuestion(body: QueryRequest): Promise<QueryResponse> {
+  return request<QueryResponse>("/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** `GET /api/conversations/{id}`: a chat's turns in order (404 when unknown). */
+export function getConversation(id: string): Promise<ConversationRead> {
+  return request<ConversationRead>(`/conversations/${encodeURIComponent(id)}`);
+}
+
+/** `GET /api/query/suggestions`: example questions built from the indexed invoices. */
+export function getSuggestions(documentId?: string): Promise<QuerySuggestions> {
+  const query = documentId ? `?${new URLSearchParams({ document_id: documentId }).toString()}` : "";
+  return request<QuerySuggestions>(`/query/suggestions${query}`);
 }

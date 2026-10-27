@@ -32,12 +32,14 @@ from app.modules.observability.schema import (
     LLMMetrics,
     LLMSpan,
     MetricsSummary,
+    RetrievalMetrics,
     Span,
     ToolSpan,
     TraceRun,
     UsageTotals,
     VisionMetrics,
 )
+from app.modules.retrieval import service as retrieval_service
 from app.modules.structured_extraction import service as structured_extraction_service
 from app.modules.vision import service as vision_service
 
@@ -56,6 +58,7 @@ def record_llm_call(record: LLMCallRecord) -> None:
             db,
             document_id=_as_uuid(labels.document_id),
             run_id=_as_uuid(labels.run_id),
+            query_run_id=_as_uuid(labels.query_run_id),
             step_index=labels.step_index,
             agent=labels.agent,
             purpose=labels.purpose or "unknown",
@@ -273,6 +276,7 @@ def get_metrics(
         by_purpose=[_group_row(r) for r in crud.group_totals(db, by="purpose", since=since)],
         guardrails=_guardrail_metrics(db, since),
         vision=_vision_metrics(db, since),
+        retrieval=_retrieval_metrics(db, since),
         prices_as_of=pricing.PRICES_AS_OF,
     )
 
@@ -317,6 +321,19 @@ def _vision_metrics(db: Session, since: datetime | None) -> VisionMetrics:
             db, purpose=Purpose.VISION_TRANSCRIPTION, since=since, ok_only=True
         ),
         multimodal_calls=crud.count_calls(db, purpose=Purpose.MULTIMODAL_EXTRACTION, since=since),
+    )
+
+
+def _retrieval_metrics(db: Session, since: datetime | None) -> RetrievalMetrics:
+    index = retrieval_service.stats(db)
+    flags = agent_service.vendor_issue_counts(db, since=since)
+    questions = agent_service.query_stats(db, since=since)
+    cost = crud.avg_cost_per_query_run(db, since=since)
+    return RetrievalMetrics(
+        **index.model_dump(),
+        **flags.model_dump(),
+        **questions.model_dump(),
+        avg_cost_per_question=_round_cost(cost) if cost is not None else None,
     )
 
 

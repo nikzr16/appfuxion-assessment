@@ -26,6 +26,7 @@ agent_var: ContextVar[str | None] = ContextVar("agent", default=None)
 purpose_var: ContextVar[str | None] = ContextVar("purpose", default=None)
 prompt_version_var: ContextVar[str | None] = ContextVar("prompt_version", default=None)
 step_index_var: ContextVar[int | None] = ContextVar("step_index", default=None)
+query_run_id_var: ContextVar[str | None] = ContextVar("query_run_id", default=None)
 
 # Context fields added to every log line when set, in this order.
 _CONTEXT_FIELDS: tuple[tuple[str, ContextVar[Any]], ...] = (
@@ -35,6 +36,7 @@ _CONTEXT_FIELDS: tuple[tuple[str, ContextVar[Any]], ...] = (
     ("purpose", purpose_var),
     ("prompt_version", prompt_version_var),
     ("step_index", step_index_var),
+    ("query_run_id", query_run_id_var),
 )
 
 # Attributes every LogRecord has; anything else was passed via ``extra=`` and is emitted.
@@ -65,6 +67,7 @@ def bind_trace(
     purpose: str | None = _UNSET,
     prompt_version: str | None = _UNSET,
     step_index: int | None = _UNSET,
+    query_run_id: str | None = _UNSET,
 ) -> Iterator[None]:
     """Bind the given trace labels for the block; labels not passed keep their value."""
     values = {
@@ -73,6 +76,7 @@ def bind_trace(
         purpose_var: purpose,
         prompt_version_var: prompt_version,
         step_index_var: step_index,
+        query_run_id_var: query_run_id,
     }
     tokens: list[tuple[ContextVar[Any], Token[Any]]] = [
         (var, var.set(value)) for var, value in values.items() if value is not _UNSET
@@ -94,6 +98,7 @@ class TraceLabels:
     purpose: str | None = None
     prompt_version: str | None = None
     step_index: int | None = None
+    query_run_id: str | None = None
 
 
 def trace_labels() -> TraceLabels:
@@ -104,6 +109,7 @@ def trace_labels() -> TraceLabels:
         purpose=purpose_var.get(),
         prompt_version=prompt_version_var.get(),
         step_index=step_index_var.get(),
+        query_run_id=query_run_id_var.get(),
     )
 
 

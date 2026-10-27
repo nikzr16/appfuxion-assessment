@@ -21,6 +21,7 @@ from app.modules.agent.tools import (
     missing_issues,
 )
 from app.modules.guardrails import service as guardrails_service
+from app.modules.retrieval.schema import HistoryCheck, SimilarInvoices
 from app.modules.text_extraction.schema import ExtractionMethod
 from app.modules.validation.schema import (
     IssueCode,
@@ -113,7 +114,7 @@ DUE_ERROR = _issue(
 # -- Definitions ----------------------------------------------------------------------
 
 
-def test_the_seven_tools_are_registered_with_strict_schemas(ctx: DocumentToolContext) -> None:
+def test_the_nine_tools_are_registered_with_strict_schemas(ctx: DocumentToolContext) -> None:
     definitions = [tool.definition() for tool in build_document_tools(ctx)]
 
     assert [d["function"]["name"] for d in definitions] == [
@@ -122,7 +123,9 @@ def test_the_seven_tools_are_registered_with_strict_schemas(ctx: DocumentToolCon
         "extract_structured_data",
         "check_grounding",
         "validate_invoice",
+        "check_vendor_history",
         "convert_currency",
+        "search_similar_invoices",
         "generate_summary",
     ]
     for definition in definitions:
@@ -130,7 +133,7 @@ def test_the_seven_tools_are_registered_with_strict_schemas(ctx: DocumentToolCon
         assert definition["function"]["strict"] is True
         assert parameters["additionalProperties"] is False
         assert parameters["required"] == list(parameters["properties"])
-    assert "MYR" in definitions[5]["function"]["description"]
+    assert "MYR" in definitions[6]["function"]["description"]
 
 
 # -- Results and guards ----------------------------------------------------------------
@@ -330,6 +333,8 @@ def test_convert_currency_needs_a_target_code(
 def _validated(ctx: DocumentToolContext, report: ValidationReport, **overrides: Any) -> None:
     _with_invoice(ctx, **overrides)
     ctx.validation = report
+    ctx.history = HistoryCheck(skipped=False)
+    ctx.similar = SimilarInvoices(document_id=ctx.document_id, available=True, items=[])
 
 
 def test_the_summary_call_gets_the_data_and_report_but_no_raw_text(
@@ -353,6 +358,7 @@ def test_the_summary_call_gets_the_data_and_report_but_no_raw_text(
         "validation",
         "conversion",
         "base_currency",
+        "similar_invoices",
         "review",
     }
     assert payload["review"] == []
@@ -411,6 +417,8 @@ def test_an_unknown_document_gets_the_fixed_summary_without_an_llm_call(
     ctx.text_done = True
     ctx.structured = unknown_document()
     ctx.validation = _report()
+    ctx.history = HistoryCheck(skipped=True)
+    ctx.similar = SimilarInvoices(document_id=ctx.document_id, available=False, items=[])
 
     result = _call(ctx, "generate_summary")
 

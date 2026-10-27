@@ -100,3 +100,15 @@ def count_calls(
     if ok_only:
         query = query.where(LlmCall.status == "ok")
     return int(db.execute(_since(query, since)).scalar_one())
+
+
+def avg_cost_per_query_run(db: Session, *, since: datetime | None = None) -> Decimal | None:
+    """Average summed cost of the Query Agent's turns (feature 0010 metrics)."""
+    per_run = (
+        select(func.sum(LlmCall.cost_usd).label("cost"))
+        .where(LlmCall.query_run_id.is_not(None))
+        .group_by(LlmCall.query_run_id)
+    )
+    per_run = _since(per_run, since).subquery()
+    value = db.execute(select(func.avg(per_run.c.cost))).scalar_one()
+    return Decimal(value) if value is not None else None

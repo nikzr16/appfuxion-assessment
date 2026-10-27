@@ -15,8 +15,10 @@ searchable with pgvector.
 > document's text, each field and document gets a confidence score, and API errors and
 > invented values are retried) and vision (`0009`: tables and layout blocks are found on every
 > page, line items of text PDFs are copied from their table by code, and scans and photos are
-> read by a multimodal model that sees the page images) are in place; the other bonus tasks
-> land in later numbered features; see [`docs/product-roadmap.md`](docs/product-roadmap.md).
+> read by a multimodal model that sees the page images) and retrieval (`0010`: every processed
+> invoice is indexed with pgvector, compared with the vendor's earlier invoices for duplicate
+> numbers and unusual amounts, and searchable through the **Ask AI** chat) are in place; the
+> multi-agent bonus lands in `0011`; see [`docs/product-roadmap.md`](docs/product-roadmap.md).
 
 ## Stack
 
@@ -69,12 +71,23 @@ Open http://localhost:8080 (or http://localhost:5173 in local development).
    items, totals and payment areas outlined and numbered. Line items copied from a table say
    so, and their locate button opens the page with that row highlighted. Scans list their
    areas instead of drawing them. Older documents say "Layout not analysed"; reprocess them.
+   **Vendor history:** how this invoice compares with the vendor's other invoices (median,
+   usual range, where this total sits), invoices with the same number, and the five most
+   similar invoices. A duplicate invoice number or an unusual amount is also a validation
+   warning that the summary mentions.
 4. **Metrics** — documents, success rate, average / p95 processing time, tokens and estimated
    cost per document, LLM usage by model and by purpose, and a **Guardrails** section
    (average confidence, share needing review, grounding rate, retries and the high / medium /
    low split) and a **Vision** section (documents with a line-item table, share of line items
-   copied by code, pages read by vision, multimodal extractions), for the last 7 or 30 days or
-   all time.
+   copied by code, pages read by vision, multimodal extractions) and a **Retrieval & Ask AI**
+   section (indexed invoices, duplicate / unusual-amount flags, questions asked, answer time
+   and cost), for the last 7 or 30 days or all time.
+5. **Ask AI** — the button at the bottom right of every page opens a chat about your stored
+   invoices ("How much have we spent with ABC Supplies this year?", "Compare this invoice with
+   previous ABC Supplies invoices"). Follow-up questions remember the chat; **New chat**
+   starts over. Answers link to the invoices they used, code does every sum, and numbers that
+   could not be matched to the data are flagged. On a document page, "this invoice" means that
+   document. The chat survives page changes and reloads in the same tab.
 
 The header shows the backend's health and a System / Light / Dark theme switch.
 
@@ -137,6 +150,22 @@ The header shows the backend's health and a System / Light / Dark theme switch.
    curl -X POST http://localhost:8080/api/documents/<document_id>/reprocess
    ```
 
+9. Optional: compare with earlier invoices (409 `not_indexed` before the document is indexed):
+
+   ```bash
+   curl http://localhost:8080/api/documents/<document_id>/vendor-history
+   curl http://localhost:8080/api/documents/<document_id>/similar
+   ```
+
+10. Optional: ask a question; pass the returned `conversation_id` to ask a follow-up, and
+    `document_id` to give the document you mean:
+
+    ```bash
+    curl -X POST http://localhost:8080/api/query -H "Content-Type: application/json" \
+      -d '{"question": "How much have we spent with ABC Supplies in total?"}'
+    curl http://localhost:8080/api/conversations/<conversation_id>
+    ```
+
 `/result` answers 409 `result_not_ready` while the document is processing and 409
 `result_unavailable` (with the error) when processing failed. The intermediate steps are also
 readable on their own: `GET /api/documents/<document_id>/text` and `/extraction`.
@@ -152,6 +181,10 @@ The backend waits for the database, applies the Alembic migrations (which enable
 `vector` extension), then starts. The app and `/api/health` work without an
 `OPENAI_API_KEY`, but processing needs it: without a key, an upload is rejected with 502
 `llm_not_configured` and nothing is stored.
+
+Documents processed before feature `0010` are not in the search index yet. Index them once
+(Docker: `docker compose exec backend python -m app.modules.retrieval.backfill`); new
+and reprocessed documents are indexed automatically.
 
 Stop with `docker compose down`. Data lives in the `appfuxion_pgdata` and
 `appfuxion_uploads` volumes and survives `down` (use `down -v` only if you want to wipe it).
@@ -198,6 +231,7 @@ Run backend commands from `backend/` and frontend commands from `frontend/`.
 | Install frontend deps | `npm install` |
 | Run UI | `npm run dev` |
 | Frontend checks | `npm run lint` / `npm run typecheck` / `npm run test` / `npm run build` |
+| Index older documents | `uv run python -m app.modules.retrieval.backfill` (one embedding call each, about $0.00001) |
 
 Tests create and migrate a separate `appfuxion_test` database on the same server, so they
 never touch your development data, and they never call the real OpenAI API.
@@ -207,7 +241,8 @@ never touch your development data, and they never call the real OpenAI API.
 One root `.env` (git-ignored) drives Docker Compose and the backend. Every key is
 documented in [`.env.example`](.env.example): OpenAI key and model names, Postgres
 credentials and ports, `AGENT_MODE`, `BASE_CURRENCY` (default `MYR`: totals in another
-currency are converted to it), `AGENT_MAX_STEPS` (default 12 model turns per agent run),
+currency are converted to it), `AGENT_MAX_STEPS` (default 14 model turns per agent run),
+`QUERY_MAX_STEPS` (default 6 model turns per Ask AI question),
 `OPENAI_MAX_RETRIES` (default 2 retries of a rate-limited, timed-out or failed OpenAI call,
 with backoff),
 `MAX_UPLOAD_MB`, `STORAGE_DIR`, and more. `AGENT_MODE=multi` is the default; until the

@@ -41,5 +41,6 @@ afterEach(() => {
   vi.useRealTimers();
   focusManager.setFocused(undefined);
   localStorage.clear();
+  sessionStorage.clear();
   document.documentElement.classList.remove("dark");
 });

@@ -32,6 +32,7 @@ class LlmCall(Base):
         Index("ix_llm_calls_document_id_started_at", "document_id", "started_at"),
         Index("ix_llm_calls_run_id", "run_id"),
         Index("ix_llm_calls_started_at", "started_at"),
+        Index("ix_llm_calls_query_run_id", "query_run_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -58,3 +59,7 @@ class LlmCall(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     # 1 = first try; 2+ = transient-error retries of the same call (feature 0008).
     attempt: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # Set for the Query Agent's calls (feature 0010).
+    query_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("query_runs.id", ondelete="CASCADE"), nullable=True
+    )

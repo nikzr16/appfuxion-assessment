@@ -167,6 +167,15 @@ def convert_currency(amount: Decimal, from_currency: str, to_currency: str) -> C
 # --- checks (one per PRD decision, in report order) ---------------------------------------
 
 
+def merge_issues(report: ValidationReport, issues: list[ValidationIssue]) -> ValidationReport:
+    """Append findings made outside this module (vendor history, feature 0010) after the
+    report's own issues and recompute the status with the same rule."""
+    if not issues:
+        return report
+    merged = [*report.issues, *issues]
+    return ValidationReport(status=_roll_up(merged), issues=merged)
+
+
 def _required_fields(data: InvoiceData) -> list[ValidationIssue]:
     """PRD D3: missing fields, severity by document type."""
     issues = []

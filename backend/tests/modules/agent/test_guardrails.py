@@ -40,6 +40,8 @@ def test_validate_before_grounding_is_refused_and_the_run_recovers(
             tool_turn("validate_invoice"),
             tool_turn("check_grounding"),
             tool_turn("validate_invoice"),
+            tool_turn("check_vendor_history"),
+            tool_turn("search_similar_invoices"),
             tool_turn("generate_summary"),
             SUMMARY,
         ]
@@ -55,6 +57,8 @@ def test_validate_before_grounding_is_refused_and_the_run_recovers(
     assert [s["tool"] for s in run.steps[4:]] == [
         "check_grounding",
         "validate_invoice",
+        "check_vendor_history",
+        "search_similar_invoices",
         "generate_summary",
     ]
 
@@ -70,6 +74,8 @@ def test_a_run_that_never_grounds_cannot_complete(
             tool_turn("extract_structured_data"),
             invoice(),
             tool_turn("validate_invoice"),
+            tool_turn("check_vendor_history"),
+            tool_turn("search_similar_invoices"),
             tool_turn("generate_summary"),
             text_turn("I am done."),
         ]
@@ -97,6 +103,8 @@ def test_a_new_extraction_must_be_grounded_again(
             tool_turn("validate_invoice"),
             tool_turn("check_grounding"),
             tool_turn("validate_invoice"),
+            tool_turn("check_vendor_history"),
+            tool_turn("search_similar_invoices"),
             tool_turn("generate_summary"),
             SUMMARY,
         ]
@@ -122,6 +130,8 @@ def test_an_invented_total_is_re_extracted_and_the_run_is_confident(
             tool_turn("check_grounding"),
             invoice(),  # the grounding retry copies the printed total
             tool_turn("validate_invoice"),
+            tool_turn("check_vendor_history"),
+            tool_turn("search_similar_invoices"),
             tool_turn("generate_summary"),
             SUMMARY,
         ]
@@ -155,6 +165,8 @@ def test_an_unconfirmed_vendor_needs_review_and_the_summary_says_so(
             invented,
             invented,
             tool_turn("validate_invoice"),
+            tool_turn("check_vendor_history"),
+            tool_turn("search_similar_invoices"),
             tool_turn("generate_summary"),
             SUMMARY,  # does not ask to verify the vendor -> retried
             SUMMARY,  # still not -> code appends the sentence
@@ -232,6 +244,8 @@ def test_extraction_before_extract_tables_is_refused_and_the_run_recovers(
             invoice(),
             tool_turn("check_grounding"),
             tool_turn("validate_invoice"),
+            tool_turn("check_vendor_history"),
+            tool_turn("search_similar_invoices"),
             tool_turn("generate_summary"),
             SUMMARY,
         ]

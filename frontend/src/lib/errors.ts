@@ -29,6 +29,22 @@ const MESSAGES: Record<string, (error: ApiError) => FriendlyError> = {
     title: "Not found",
     message: "This document doesn't exist or was removed.",
   }),
+  query_failed: () => ({
+    title: "No answer this time",
+    message: "The assistant could not finish its answer. Try again, or ask the question in a simpler way.",
+  }),
+  llm_rate_limited: () => ({
+    title: "The AI service is busy",
+    message: "Too many requests right now. Wait a moment and try again.",
+  }),
+  llm_timeout: () => ({
+    title: "The AI service took too long",
+    message: "It did not answer in time. Try again.",
+  }),
+  llm_unavailable: () => ({
+    title: "The AI service is unavailable",
+    message: "It could not be reached. Try again in a moment.",
+  }),
   internal_error: () => ({
     title: "Something went wrong",
     message: "The server hit an unexpected error. Please try again.",
