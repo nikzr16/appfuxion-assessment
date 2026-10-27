@@ -72,7 +72,11 @@ export interface ExtractionResponse {
   model: string;
   prompt_version: string;
   attempts: number;
+  /** Feature 0009: `table` when code copied the line items from the document's table. */
+  line_items_source?: LineItemsSource | null;
 }
+
+export type LineItemsSource = "table" | "model";
 
 export type Severity = "error" | "warning" | "info";
 export type ValidationStatus = "pass" | "warn" | "fail";
@@ -125,7 +129,88 @@ export interface FieldConfidence {
   /** Character offsets into `raw_text` as `GET /text` returns it. */
   start: number | null;
   end: number | null;
+  /** Feature 0009: where the value sits on the page (a table cell or a layout block). */
+  location?: FieldLocation | null;
   reasons: string[];
+}
+
+export interface FieldLocation {
+  page: number;
+  box: Box | null;
+  block: BlockType | null;
+  table: number | null;
+  row: number | null;
+  column: ColumnRole | null;
+}
+
+// -- Vision: tables and layout (feature 0009) ----------------------------------------
+
+/** x0, y0, x1, y1 as fractions (0-1) of the page, origin at the top-left corner. */
+export type Box = [number, number, number, number];
+export type BlockType =
+  | "header"
+  | "document_info"
+  | "bill_to"
+  | "line_items"
+  | "totals"
+  | "payment"
+  | "other";
+export type ColumnRole = "description" | "quantity" | "unit_price" | "amount" | "other";
+export type TableKind = "line_items" | "other";
+export type TableStrategy = "lines" | "text" | "vision";
+
+export interface PageInfo {
+  page: number;
+  width: number;
+  height: number;
+}
+
+export interface TableRow {
+  page: number;
+  cells: (string | null)[];
+  box: Box | null;
+  cell_boxes: (Box | null)[] | null;
+}
+
+export interface LayoutTable {
+  index: number;
+  pages: number[];
+  box: Box | null;
+  strategy: TableStrategy;
+  header: (string | null)[] | null;
+  columns: ColumnRole[];
+  kind: TableKind;
+  rows: TableRow[];
+}
+
+export interface LayoutBlock {
+  type: BlockType;
+  page: number;
+  order: number;
+  text: string;
+  box: Box | null;
+}
+
+export interface LayoutHistoryItem {
+  layout_id: string;
+  created_at: string;
+  source: ExtractionMethod;
+  layout_version: string;
+  run_id: string | null;
+}
+
+export interface LayoutResponse {
+  document_id: string;
+  layout_id: string;
+  source: ExtractionMethod;
+  layout_version: string;
+  run_id: string | null;
+  created_at: string;
+  page_count: number;
+  pages: PageInfo[];
+  tables: LayoutTable[];
+  blocks: LayoutBlock[];
+  history: LayoutHistoryItem[];
 }
 
 export interface ConfidenceReport {
@@ -300,7 +385,20 @@ export interface MetricsSummary {
   by_purpose: GroupTotals[];
   /** Feature 0008. */
   guardrails?: GuardrailMetrics;
+  /** Feature 0009. */
+  vision?: VisionMetrics;
   prices_as_of: string;
+}
+
+export interface VisionMetrics {
+  layouts_analysed: number;
+  documents_with_line_item_table: number;
+  tables_found: number;
+  line_items_from_table: number;
+  line_items_from_model: number;
+  line_items_table_share: number | null;
+  pages_via_vision: number;
+  multimodal_calls: number;
 }
 
 export interface GuardrailMetrics {

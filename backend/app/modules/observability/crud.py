@@ -90,3 +90,13 @@ def count_retries(db: Session, *, since: datetime | None = None) -> int:
     """Ledger rows that were a transient-error retry (feature 0008)."""
     query = select(func.count()).select_from(LlmCall).where(LlmCall.attempt > 1)
     return int(db.execute(_since(query, since)).scalar_one())
+
+
+def count_calls(
+    db: Session, *, purpose: str, since: datetime | None = None, ok_only: bool = False
+) -> int:
+    """Ledger rows with this purpose (feature 0009 metrics)."""
+    query = select(func.count()).select_from(LlmCall).where(LlmCall.purpose == purpose)
+    if ok_only:
+        query = query.where(LlmCall.status == "ok")
+    return int(db.execute(_since(query, since)).scalar_one())

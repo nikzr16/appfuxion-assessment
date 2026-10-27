@@ -50,6 +50,7 @@ const PURPOSE_LABEL: Record<string, string> = {
   agent_loop: "Agent decides next step",
   vision_transcription: "Vision transcription",
   structured_extraction: "Structured extraction",
+  multimodal_extraction: "Multimodal extraction",
   grounding_retry: "Grounding retry",
   summary: "Summary",
   embedding: "Embedding",

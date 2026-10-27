@@ -80,6 +80,7 @@ def ctx(
 def _with_invoice(ctx: DocumentToolContext, **overrides: Any) -> DocumentToolContext:
     """Skip the extraction and grounding tools: state as if they ran in this run."""
     ctx.text_done = True
+    ctx.tables_done = True
     ctx.structured = invoice(**overrides)
     ctx.grounding = guardrails_service.check_grounding(
         ctx.structured, "\n".join(INVOICE_LINES), ExtractionMethod.PDF_PARSER
@@ -112,11 +113,12 @@ DUE_ERROR = _issue(
 # -- Definitions ----------------------------------------------------------------------
 
 
-def test_the_six_tools_are_registered_with_strict_schemas(ctx: DocumentToolContext) -> None:
+def test_the_seven_tools_are_registered_with_strict_schemas(ctx: DocumentToolContext) -> None:
     definitions = [tool.definition() for tool in build_document_tools(ctx)]
 
     assert [d["function"]["name"] for d in definitions] == [
         "extract_text",
+        "extract_tables",
         "extract_structured_data",
         "check_grounding",
         "validate_invoice",
@@ -128,7 +130,7 @@ def test_the_six_tools_are_registered_with_strict_schemas(ctx: DocumentToolConte
         assert definition["function"]["strict"] is True
         assert parameters["additionalProperties"] is False
         assert parameters["required"] == list(parameters["properties"])
-    assert "MYR" in definitions[4]["function"]["description"]
+    assert "MYR" in definitions[5]["function"]["description"]
 
 
 # -- Results and guards ----------------------------------------------------------------
@@ -149,9 +151,52 @@ def test_structured_data_needs_text_from_this_run(ctx: DocumentToolContext) -> N
     assert _fake(ctx).calls == []
 
 
+def test_extract_tables_needs_text_from_this_run(ctx: DocumentToolContext) -> None:
+    error = _error(ctx, "extract_tables")
+
+    assert (error.code, error.fatal) == ("text_not_extracted", False)
+
+
+def test_structured_data_needs_tables_from_this_run(ctx: DocumentToolContext) -> None:
+    _call(ctx, "extract_text")
+
+    error = _error(ctx, "extract_structured_data")
+
+    assert (error.code, error.fatal) == ("tables_required", False)
+    assert _fake(ctx).calls == []
+
+
+def test_extract_tables_returns_counts_without_cell_text(ctx: DocumentToolContext) -> None:
+    _call(ctx, "extract_text")
+
+    result = _call(ctx, "extract_tables")
+
+    assert result["available"] is True
+    assert result["source"] == "pdf_parser"
+    assert set(result) == {
+        "source",
+        "available",
+        "pages",
+        "tables",
+        "line_item_table",
+        "blocks",
+        "reused",
+    }
+    assert ctx.tables_done
+
+
+def test_a_new_extract_text_needs_tables_again(ctx: DocumentToolContext) -> None:
+    _call(ctx, "extract_text")
+    _call(ctx, "extract_tables")
+    _call(ctx, "extract_text")
+
+    assert _error(ctx, "extract_structured_data").code == "tables_required"
+
+
 def test_structured_data_returns_the_invoice_json(ctx: DocumentToolContext) -> None:
     _fake(ctx).queue(invoice())
     _call(ctx, "extract_text")
+    _call(ctx, "extract_tables")
 
     result = _call(ctx, "extract_structured_data")
 
@@ -195,29 +240,38 @@ def test_reprocess_forces_only_the_first_extraction_calls(
     forced: list[tuple[str, bool]] = []
     real_text = tools.text_extraction_service.extract_text
     real_structured = tools.structured_extraction_service.extract_structured_data
+    real_tables = tools.vision_service.extract_tables
 
     def text_spy(*args: Any, force: bool) -> Any:
         forced.append(("text", force))
         return real_text(*args, force=force)
 
-    def structured_spy(*args: Any, force: bool) -> Any:
+    def structured_spy(*args: Any, force: bool, **kwargs: Any) -> Any:
         forced.append(("structured", force))
-        return real_structured(*args, force=force)
+        return real_structured(*args, force=force, **kwargs)
+
+    def tables_spy(*args: Any, force: bool, **kwargs: Any) -> Any:
+        forced.append(("tables", force))
+        return real_tables(*args, force=force, **kwargs)
 
     monkeypatch.setattr(tools.text_extraction_service, "extract_text", text_spy)
     monkeypatch.setattr(
         tools.structured_extraction_service, "extract_structured_data", structured_spy
     )
+    monkeypatch.setattr(tools.vision_service, "extract_tables", tables_spy)
     ctx.force = True
     _fake(ctx).queue(invoice(), invoice())
 
-    for name in ("extract_text", "extract_text", "extract_structured_data"):
+    for name in ("extract_text", "extract_text", "extract_tables", "extract_tables"):
         _call(ctx, name)
+    _call(ctx, "extract_structured_data")
     _call(ctx, "extract_structured_data")
 
     assert forced == [
         ("text", True),
         ("text", False),
+        ("tables", True),
+        ("tables", False),
         ("structured", True),
         ("structured", False),
     ]

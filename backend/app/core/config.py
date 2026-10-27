@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     # Totals in another currency are converted to this one (ISO 4217 code).
     base_currency: str = "MYR"
     # Most model turns one agent run may take before it fails with ``agent_max_steps``.
-    agent_max_steps: int = Field(default=10, ge=1, le=30)
+    agent_max_steps: int = Field(default=12, ge=1, le=30)
 
     @field_validator("base_currency")
     @classmethod

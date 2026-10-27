@@ -13,8 +13,10 @@ searchable with pgvector.
 > problem. The web UI (`0006`), observability (`0007`: a token ledger, per-document traces
 > and a metrics page) and guardrails (`0008`: every extracted value is checked against the
 > document's text, each field and document gets a confidence score, and API errors and
-> invented values are retried) are in place; the other bonus tasks land in later numbered
-> features; see [`docs/product-roadmap.md`](docs/product-roadmap.md).
+> invented values are retried) and vision (`0009`: tables and layout blocks are found on every
+> page, line items of text PDFs are copied from their table by code, and scans and photos are
+> read by a multimodal model that sees the page images) are in place; the other bonus tasks
+> land in later numbered features; see [`docs/product-roadmap.md`](docs/product-roadmap.md).
 
 ## Stack
 
@@ -62,10 +64,17 @@ Open http://localhost:8080 (or http://localhost:5173 in local development).
    text say "Not found in document", a **Needs review** banner lists the fields to check, and
    the text-search button next to a value opens the raw text with that value highlighted.
    Documents processed before this feature say "Confidence not available"; reprocess them.
+   **Tables & layout:** the **Tables** tab shows every table found (and whether it fed the
+   line items); the **Page** tab shows the page with its vendor, document info, bill-to, line
+   items, totals and payment areas outlined and numbered. Line items copied from a table say
+   so, and their locate button opens the page with that row highlighted. Scans list their
+   areas instead of drawing them. Older documents say "Layout not analysed"; reprocess them.
 4. **Metrics** — documents, success rate, average / p95 processing time, tokens and estimated
    cost per document, LLM usage by model and by purpose, and a **Guardrails** section
    (average confidence, share needing review, grounding rate, retries and the high / medium /
-   low split), for the last 7 or 30 days or all time.
+   low split) and a **Vision** section (documents with a line-item table, share of line items
+   copied by code, pages read by vision, multimodal extractions), for the last 7 or 30 days or
+   all time.
 
 The header shows the backend's health and a System / Light / Dark theme switch.
 
@@ -93,7 +102,8 @@ The header shows the backend's health and a System / Light / Dark theme switch.
    ```
 
 4. Optional: see which tools the agent called, in order, with results and timings (including
-   `check_grounding`; the grounding report itself is on `GET /documents/<document_id>/extraction`):
+   `extract_tables` and `check_grounding`; the grounding report itself is on
+   `GET /documents/<document_id>/extraction`):
 
    ```bash
    curl http://localhost:8080/api/documents/<document_id>/runs
@@ -113,7 +123,15 @@ The header shows the backend's health and a System / Light / Dark theme switch.
    curl http://localhost:8080/api/metrics/summary
    ```
 
-7. Optional: run the whole agent again (text and data are re-extracted):
+7. Optional: see the tables and layout blocks found (with page positions for text PDFs and
+   the earlier analyses in `history`), or a page image:
+
+   ```bash
+   curl http://localhost:8080/api/documents/<document_id>/layout
+   curl -o page1.jpg http://localhost:8080/api/documents/<document_id>/pages/1/image
+   ```
+
+8. Optional: run the whole agent again (text, tables and data are re-extracted):
 
    ```bash
    curl -X POST http://localhost:8080/api/documents/<document_id>/reprocess
@@ -189,7 +207,7 @@ never touch your development data, and they never call the real OpenAI API.
 One root `.env` (git-ignored) drives Docker Compose and the backend. Every key is
 documented in [`.env.example`](.env.example): OpenAI key and model names, Postgres
 credentials and ports, `AGENT_MODE`, `BASE_CURRENCY` (default `MYR`: totals in another
-currency are converted to it), `AGENT_MAX_STEPS` (default 10 model turns per agent run),
+currency are converted to it), `AGENT_MAX_STEPS` (default 12 model turns per agent run),
 `OPENAI_MAX_RETRIES` (default 2 retries of a rate-limited, timed-out or failed OpenAI call,
 with backoff),
 `MAX_UPLOAD_MB`, `STORAGE_DIR`, and more. `AGENT_MODE=multi` is the default; until the

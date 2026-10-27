@@ -28,6 +28,7 @@ from app.modules.guardrails.schema import ConfidenceReport, GroundingReport
 from app.modules.structured_extraction import service as structured_extraction_service
 from app.modules.structured_extraction.schema import DocumentType, InvoiceData
 from app.modules.text_extraction import service as text_extraction_service
+from app.modules.text_extraction.schema import ExtractionMethod
 from app.modules.validation import service as validation_service
 from app.modules.validation.schema import (
     ConversionResult,
@@ -36,11 +37,13 @@ from app.modules.validation.schema import (
     ValidationIssue,
     ValidationReport,
 )
+from app.modules.vision import service as vision_service
 
 # Errors the model can act on; every other ``AppError`` code ends the run (PRD D6).
 RECOVERABLE_CODES = frozenset(
     {
         "text_not_extracted",
+        "tables_required",
         "structured_data_missing",
         "grounding_required",
         "validation_required",
@@ -70,6 +73,8 @@ class DocumentToolContext:
     today: date | None = None
     summary_usage: TokenUsage = field(default_factory=TokenUsage)
     text_done: bool = False
+    text_method: ExtractionMethod | None = None
+    tables_done: bool = False
     structured: InvoiceData | None = None
     grounding: GroundingReport | None = None
     confidence: ConfidenceReport | None = None
@@ -77,6 +82,7 @@ class DocumentToolContext:
     conversion: ConversionResult | None = None
     summary: str | None = None
     _text_forced: bool = False
+    _tables_forced: bool = False
     _structured_forced: bool = False
 
 
@@ -92,10 +98,21 @@ def build_document_tools(ctx: DocumentToolContext) -> list[Tool]:
             handler=_guarded(lambda _args: _extract_text(ctx)),
         ),
         Tool(
+            name="extract_tables",
+            description=(
+                "Find the document's tables and layout blocks (header, bill-to, line items, "
+                "totals, ...). Always call it after extract_text, even when there may be no "
+                "table; extract_structured_data refuses to run before it. Returns counts, "
+                "table kinds and column roles, not the cell text."
+            ),
+            parameters=NO_ARGUMENTS,
+            handler=_guarded(lambda _args: _extract_tables(ctx)),
+        ),
+        Tool(
             name="extract_structured_data",
             description=(
-                "Extract the invoice fields from the document's text and return them as "
-                "JSON. Requires extract_text."
+                "Extract the invoice fields from the document's text and tables and return "
+                "them as JSON. Requires extract_tables."
             ),
             parameters=NO_ARGUMENTS,
             handler=_guarded(lambda _args: _extract_structured_data(ctx)),
@@ -177,6 +194,9 @@ def _extract_text(ctx: DocumentToolContext) -> dict[str, Any]:
     )
     ctx._text_forced = ctx._text_forced or force
     ctx.text_done = True
+    ctx.text_method = text.method
+    # New text needs its tables found again (PRD 0009 D7).
+    ctx.tables_done = False
     return {
         "method": text.method.value,
         "page_count": text.page_count,
@@ -184,12 +204,26 @@ def _extract_text(ctx: DocumentToolContext) -> dict[str, Any]:
     }
 
 
+def _extract_tables(ctx: DocumentToolContext) -> dict[str, Any]:
+    if not ctx.text_done or ctx.text_method is None:
+        raise ToolError("text_not_extracted", "Call extract_text before extract_tables.")
+    force = ctx.force and not ctx._tables_forced
+    summary = vision_service.extract_tables(
+        ctx.db, ctx.storage, ctx.document_id, method=ctx.text_method, force=force
+    )
+    ctx._tables_forced = ctx._tables_forced or force
+    ctx.tables_done = True
+    return summary.model_dump(mode="json")
+
+
 def _extract_structured_data(ctx: DocumentToolContext) -> dict[str, Any]:
     if not ctx.text_done:
         raise ToolError("text_not_extracted", "Call extract_text before extract_structured_data.")
+    if not ctx.tables_done:
+        raise ToolError("tables_required", "Call extract_tables before extract_structured_data.")
     force = ctx.force and not ctx._structured_forced
     extraction = structured_extraction_service.extract_structured_data(
-        ctx.db, ctx.llm, ctx.document_id, force=force
+        ctx.db, ctx.llm, ctx.document_id, force=force, storage=ctx.storage
     )
     ctx._structured_forced = ctx._structured_forced or force
     ctx.structured = extraction.data
@@ -202,7 +236,9 @@ def _extract_structured_data(ctx: DocumentToolContext) -> dict[str, Any]:
 
 def _check_grounding(ctx: DocumentToolContext) -> dict[str, Any]:
     before = _require_structured(ctx, "check_grounding").model_dump(mode="json")
-    extraction = structured_extraction_service.ground_extraction(ctx.db, ctx.llm, ctx.document_id)
+    extraction = structured_extraction_service.ground_extraction(
+        ctx.db, ctx.llm, ctx.document_id, storage=ctx.storage
+    )
     assert extraction.grounding is not None
     report = extraction.grounding.report
     ctx.structured = extraction.data

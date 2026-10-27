@@ -392,6 +392,74 @@ feature number (`0000`, `0001`, ...).
   needing review, grounding rate, grounding and transient retries) and a high / medium / low
   split bar whose colours were checked with the palette validator in both themes.
 
+### 0009 - Vision (tables, layout, multimodal extraction)
+
+- **One module for everything image- and layout-related.** The new `vision` module owns
+  page rendering (moved from `text_extraction`, with its render lock), the vision page call,
+  `pdfplumber` table and layout analysis, the table → line-item mapping, a
+  `document_layouts` table and two read endpoints. `text_extraction` keeps `raw_text` and
+  `GET /text`. Dependencies run one way: `text_extraction`, `structured_extraction`, the agent
+  and observability call `vision.service`; `vision.service` calls only `documents.service`
+  (the agent tool passes the text method in), so there is no import cycle.
+- **Text PDFs: tables and layout by code, no LLM.** Ruled tables come from `pdfplumber`'s
+  `lines` strategy. Its `text` strategy split words in the middle of cells on our invoices
+  (`Descriptio | n`), so unruled tables use our own detector: a header line with at least two
+  known column titles (English and Malay: description / perkara, qty / kuantiti, unit price /
+  harga seunit, amount / jumlah) fixes the column positions, rows below are cut at those
+  positions, wrapped descriptions join the row above, and the table ends at a totals line or a
+  wide gap. A table that continues on the next page (same columns, ending low on one page and
+  starting high on the next) is stitched and its repeated header dropped; merged cells stay in
+  their first cell. Layout blocks come from the page's words: lines → segments split at wide
+  gaps (so a two-column header becomes two blocks; a totals label keeps its amount) → blocks
+  of stacked segments, typed by label keywords (totals, bill-to, document info, payment) and
+  position (the first unlabelled block above the table is the vendor header), each with a
+  0–1 box and a reading order.
+- **Scans: one look per page.** The vision call now returns `PageAnalysis {text, legible,
+  tables, blocks}`: the same transcription rules as 0002 (so `raw_text` and grounding behave
+  as before) plus the page's tables and blocks, at no extra call or image cost (only more
+  output tokens). Blocks from the model have no boxes: model coordinates drift, so a scan's
+  blocks are listed, not drawn.
+- **Line items copied by code.** When a text PDF has a line-item table whose columns clearly
+  map (description + amount, or description + quantity + unit price), code builds
+  `line_items` from its rows after every extraction call (first, schema retry, grounding
+  retry) and records `line_items_source = table`; the model still extracts every header field
+  and sees the tables in a `<tables>` section of its prompt. Because the table is read from the
+  whole document, a long text PDF no longer loses the line items 0003's head + tail cut drops.
+  On scans the tables come from the same model, so they are only a hint and the model's line
+  items stay (`model`).
+- **Multimodal extraction for scans.** For `vision` documents, `extract_structured_data`
+  re-renders the page images (same limits as the page call) and sends them with the text,
+  labelled `multimodal_extraction`; grounding retries send them too. The prompt says to copy
+  what the image shows when text and image disagree. Text PDFs stay text-only: their text
+  layer is exact.
+- **A guarded `extract_tables` tool.** The agent order is now `extract_text` →
+  `extract_tables` → `extract_structured_data` → `check_grounding` → `validate_invoice` →
+  (`convert_currency`) → `generate_summary`. `extract_structured_data` refuses with
+  `tables_required` until `extract_tables` ran after the current `extract_text`. The tool runs
+  `pdfplumber` for text PDFs (reusing the newest `layout.v1` analysis unless reprocessing) and
+  reads the vision row for scans (no LLM call); it returns counts, kinds and column roles,
+  never cell text. It sits in the Extraction lane; `AGENT_MAX_STEPS` went from 10 to 12.
+- **Grounding by layout.** A table-copied line-item value is `grounded` at its cell (match
+  `table`, with page, cell box, table, row and column), and the text span is still kept for
+  "Show in text". When a totals block exists, the total must be one of its numbers or sit on
+  a line with a total label; a total found only elsewhere (e.g. a line amount) becomes `weak`
+  with "Found, but not next to a total label". No new statuses: the 0008 confidence formula is
+  unchanged and only its inputs improved.
+- **History per analysis.** `document_layouts` is append-only: each analysis is a row with its
+  source, version (`layout.v1` / `vision.v1`), pages, tables, blocks and the agent run that
+  made it; the newest is current. `GET /layout` returns it plus history metadata, and
+  `GET /pages/{n}/image` renders a 1600 px JPEG preview on request (any PDF page; page 1 of an
+  image). Old documents are not back-filled (reprocess analyses them).
+- **UI.** A "Tables & layout" card on the detail page with two tabs: **Tables** shows each
+  table as a real table (pages, row count, how it was found, and whether it fed the line
+  items); **Page** shows the page image with each block outlined, numbered in reading order
+  and labelled (seven categorical colours checked with the palette validator on the white page
+  and both surfaces; the text label and number carry the meaning), a legend, a block list and
+  a page switcher. Line items copied from a table get "Show on page", which opens the page and
+  highlights that row, and the Line items card says "Copied from the table" or "Read by the
+  model". The Metrics page gains a Vision section (documents with a line-item table, share of
+  line items copied by code, pages read by vision, multimodal extractions).
+
 ## 2. Prompt design
 
 _TODO per feature: prompt structure, versioning (`PROMPT_VERSION`), output schemas, and how
@@ -477,6 +545,24 @@ hallucination is prevented (fields absent from the document are `null`)._
   listed in the single retry and, if still missing, code appends "Please verify the vendor
   and total amount: they could not be confirmed in the document text."
 
+**0009 - Vision**
+- `vision.v1` (`app/modules/vision/prompts.py`, stored on vision text rows and layout rows):
+  the 0002 transcription rules for `text` word for word, plus two lists. `tables`: every table
+  top to bottom, `header` = the printed column titles (`[]` if none), `rows` = each printed
+  body row copied exactly with `""` for an empty cell, subtotal / total rows only when they are
+  inside the table, never invented rows. `blocks`: the page's areas in reading order, one of
+  seven types each described in one line (vendor header, document info, bill-to, line items,
+  totals, payment, other), text copied exactly. Strict structured output (`PageAnalysis`); the
+  call keeps the `vision_transcription` purpose so metrics stay comparable over time.
+- `structured_extraction.v3`: the system prompt adds two security lines: tables between
+  `<tables>` and `</tables>` were detected by the system in the same document, are data too,
+  and win over the text when they disagree; for a scan the page images are attached and win
+  over the text when they disagree. The user message adds the `<tables>` section after
+  `</document>` (each table as `Table 1 (page 2, line items; columns: Description | Qty | …)`
+  then `cell | cell` rows, capped at 20,000 characters) and, for scans, the page images.
+- `agent.document.v3`: the order gains step 2, `extract_tables`, with "always call it, even
+  when the document may have no table: extract_structured_data refuses to run before it".
+
 ## 3. Limitations
 
 _TODO per feature: known gaps (for example the static, dated currency-rate table)._
@@ -505,7 +591,8 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
   then trusted as `pdf_parser` text. `force=True` re-extracts it, but there is no automatic
   re-extraction or per-page comparison.
 - Table structure is not extracted (rows are only kept on one line with `" | "` in vision
-  text); positions and bounding boxes are out of scope.
+  text); positions and bounding boxes are out of scope. (Resolved in 0009: tables, layout
+  blocks and boxes for text PDFs; tables and blocks without boxes for scans.)
 - `reportlab` is a dev-only dependency used to build test PDFs; the production image does
   not contain it.
 - No extraction ran on upload until 0005 (resolved: the agent's `extract_text` tool runs it).
@@ -527,7 +614,9 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
 - Trailing zeros are not preserved: a JSON number `5.00` becomes `Decimal("5")`. The value is
   exact; only its printed formatting is lost.
 - Text over 60,000 characters is cut to its first 45,000 and last 15,000 characters; line
-  items in the middle of a very long document are lost.
+  items in the middle of a very long document are lost. (Since 0009, text PDFs with a
+  line-item table keep every item: code copies them from the whole table; scans still lose
+  them.)
 - If the text is re-extracted with `force=True`, the saved structured data is not invalidated
   automatically; it must be re-extracted with `force=True` too (0005's reprocess does both).
 - Only one row per document is kept; earlier extractions are overwritten, not versioned.
@@ -610,6 +699,23 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
   update old runs, and results from before 0008 have none.
 - Worst case, one extraction makes 3 calls and each call 3 attempts with waits of up to
   20–60 s, so a document can take minutes to fail when OpenAI is down; the trace shows why.
+
+**0009 - Vision**
+- Table detection is rule-based: an unruled table needs a header line with at least two known
+  column titles, and only a confident column mapping replaces the model's line items. Invoices
+  with unusual headers ("Particulars / Nos / Rate / Value" in a non-listed language), side-by-side
+  tables or rotated text fall back to the model's line items (`line_items_source = model`).
+- Block types come from label keywords and position; an unlabelled totals area or a vendor
+  name below the bill-to is typed `other`, and then the total-placement check is skipped.
+- Scanned pages have no positions (the model's boxes are not trusted), so scans get no boxes
+  and no "Show on page"; their tables are a hint, not a source of line items.
+- The vision page call returns the table cells as well as the text, roughly doubling its
+  output tokens; multimodal extraction adds about 1–2.5 k input tokens per page on every
+  extraction call of a scan (including grounding retries).
+- Page images are rendered on request under the single render lock; many previews at once
+  queue behind scans being rendered. Nothing is cached server-side.
+- Analyses are kept forever (one row per reprocess); there is no retention.
+- Documents processed before 0009 have no layout until reprocessed.
 
 ## 4. Production improvements
 
@@ -700,9 +806,23 @@ retries and rate-limit handling, database backups)._
 - Add model logprobs as a signal (mean token logprob per JSON field) and an optional
   LLM-judge pass for low-confidence fields only.
 - Ground by layout as well as text: check that the total sits near a "Total" label and that
-  line amounts sit in the amount column (B5's table extraction makes this possible).
+  line amounts sit in the amount column (B5's table extraction makes this possible). (Done in
+  0009 for text PDFs: table cells and the totals block.)
 - Re-ask only the failed fields with a partial schema once documents are long enough for the
   saved tokens to matter, and route low-confidence documents to a human review queue with
   in-place correction that feeds the evaluation set.
 - Add a circuit breaker and a fallback model when the error rate of transient retries rises,
   and a total deadline per document instead of per attempt.
+
+**0009 - Vision**
+- Use a layout model (e.g. Table Transformer or a document AI service with word boxes) for
+  scans, so they get positions, "Show on page" and table-copied line items too; keep
+  `pdfplumber` for text PDFs.
+- Learn column titles and block labels from a labelled set (per language and vendor) instead
+  of keyword lists, and evaluate table extraction (row / cell accuracy) on real invoices.
+- Map every grounding match to word boxes so any field, not only table rows, can be shown on
+  the page; overlay the grounded values on the preview.
+- Ask the model for header fields only when line items come from a table, to save output
+  tokens on long invoices; extract long scans page by page and merge.
+- Cache rendered previews (object storage / CDN keyed by file hash and page), render in a
+  worker, and add a retention policy for old analyses.

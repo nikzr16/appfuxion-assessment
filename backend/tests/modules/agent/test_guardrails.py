@@ -34,6 +34,7 @@ def test_validate_before_grounding_is_refused_and_the_run_recovers(
     fake = FakeLLM(
         [
             tool_turn("extract_text"),
+            tool_turn("extract_tables"),
             tool_turn("extract_structured_data"),
             invoice(),
             tool_turn("validate_invoice"),
@@ -48,10 +49,10 @@ def test_validate_before_grounding_is_refused_and_the_run_recovers(
 
     run = _run(db_session, document_id)
     assert run.status == RunStatus.COMPLETED
-    refused = run.steps[2]
+    refused = run.steps[3]
     assert (refused["tool"], refused["status"]) == ("validate_invoice", "error")
     assert refused["error"]["code"] == "grounding_required"
-    assert [s["tool"] for s in run.steps[3:]] == [
+    assert [s["tool"] for s in run.steps[4:]] == [
         "check_grounding",
         "validate_invoice",
         "generate_summary",
@@ -65,6 +66,7 @@ def test_a_run_that_never_grounds_cannot_complete(
     fake = FakeLLM(
         [
             tool_turn("extract_text"),
+            tool_turn("extract_tables"),
             tool_turn("extract_structured_data"),
             invoice(),
             tool_turn("validate_invoice"),
@@ -87,6 +89,7 @@ def test_a_new_extraction_must_be_grounded_again(
     fake = FakeLLM(
         [
             tool_turn("extract_text"),
+            tool_turn("extract_tables"),
             tool_turn("extract_structured_data"),
             invoice(),
             tool_turn("check_grounding"),
@@ -103,7 +106,7 @@ def test_a_new_extraction_must_be_grounded_again(
 
     run = _run(db_session, document_id)
     assert run.status == RunStatus.COMPLETED
-    assert run.steps[4]["error"]["code"] == "grounding_required"
+    assert run.steps[5]["error"]["code"] == "grounding_required"
 
 
 def test_an_invented_total_is_re_extracted_and_the_run_is_confident(
@@ -113,6 +116,7 @@ def test_an_invented_total_is_re_extracted_and_the_run_is_confident(
     fake = FakeLLM(
         [
             tool_turn("extract_text"),
+            tool_turn("extract_tables"),
             tool_turn("extract_structured_data"),
             invoice(total_amount="132.45"),
             tool_turn("check_grounding"),
@@ -127,7 +131,7 @@ def test_an_invented_total_is_re_extracted_and_the_run_is_confident(
 
     run = _run(db_session, document_id)
     assert run.status == RunStatus.COMPLETED
-    grounding_step = run.steps[2]["result"]
+    grounding_step = run.steps[3]["result"]
     assert grounding_step["retries"] == 1
     assert grounding_step["ungrounded"] == 0
     assert grounding_step["changed_fields"] == ["total_amount"]
@@ -144,6 +148,7 @@ def test_an_unconfirmed_vendor_needs_review_and_the_summary_says_so(
     fake = FakeLLM(
         [
             tool_turn("extract_text"),
+            tool_turn("extract_tables"),
             tool_turn("extract_structured_data"),
             invented,
             tool_turn("check_grounding"),
@@ -212,3 +217,30 @@ def test_confidence_stats_summarise_scored_runs(
     assert stats.avg_confidence is not None and stats.avg_confidence > 0.85
     assert stats.needs_review == 0
     assert stats.by_label == {"high": 1, "medium": 0, "low": 0}
+
+
+def test_extraction_before_extract_tables_is_refused_and_the_run_recovers(
+    db_session: Session, make_document: MakeDocument, run_agent: RunAgent
+) -> None:
+    document_id = make_document()
+    fake = FakeLLM(
+        [
+            tool_turn("extract_text"),
+            tool_turn("extract_structured_data"),  # skips extract_tables (feature 0009)
+            tool_turn("extract_tables"),
+            tool_turn("extract_structured_data"),
+            invoice(),
+            tool_turn("check_grounding"),
+            tool_turn("validate_invoice"),
+            tool_turn("generate_summary"),
+            SUMMARY,
+        ]
+    )
+
+    run_agent(document_id, fake)
+
+    run = _run(db_session, document_id)
+    assert run.status == RunStatus.COMPLETED
+    refused = run.steps[1]
+    assert (refused["tool"], refused["status"]) == ("extract_structured_data", "error")
+    assert refused["error"]["code"] == "tables_required"

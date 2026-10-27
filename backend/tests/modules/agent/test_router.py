@@ -77,6 +77,7 @@ def test_runs_lists_the_tool_calls(client: TestClient, processed: str) -> None:
     assert "result" not in run
     assert [step["tool"] for step in run["steps"]] == [
         "extract_text",
+        "extract_tables",
         "extract_structured_data",
         "check_grounding",
         "validate_invoice",

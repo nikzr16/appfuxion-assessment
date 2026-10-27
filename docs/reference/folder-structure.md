@@ -13,13 +13,14 @@ current state; record the divergence in the decision log.
 
 ## Overview
 
-Structure of the Document Intelligence Agent repository as of feature `0006`
-(frontend): a FastAPI backend with shared core infrastructure, a `health` module,
-the `documents` upload module, the `text_extraction` module, the `structured_extraction`
-module, the pure `validation` module, the `agent` module (Document Agent, the shared
-`AgentRunner`, the upload pipeline) and the small `client_config` module, a Vite + React web
-UI (Upload, Documents, Document detail with the multi-agent view), PostgreSQL + pgvector in
-Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
+Structure of the Document Intelligence Agent repository as of feature `0009`
+(vision): a FastAPI backend with shared core infrastructure, a `health` module,
+the `documents` upload module, the `text_extraction` module, the `vision` module (tables,
+layout, page images), the `structured_extraction` module, the pure `validation` and
+`guardrails` modules, the `agent` module (Document Agent, the shared `AgentRunner`, the upload
+pipeline), `observability` and the small `client_config` module, a Vite + React web UI
+(Upload, Documents, Document detail with the multi-agent view and Tables & layout, Metrics),
+PostgreSQL + pgvector in Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 
 ## Directory Layout
 
@@ -28,7 +29,7 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                 # create_app(), ROUTERS list, /api prefix, registers the agent pipeline and the LLM ledger recorder
-│   │   ├── models.py               # model registry imported by Alembic (agent, documents, observability, text_extraction, structured_extraction)
+│   │   ├── models.py               # model registry imported by Alembic (agent, documents, observability, text_extraction, structured_extraction, vision)
 │   │   ├── core/
 │   │   │   ├── config.py           # pydantic-settings Settings, get_settings()
 │   │   │   ├── db.py               # engine, SessionLocal, Base, get_db
@@ -42,12 +43,15 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   │   └── modules/
 │   │       ├── health/             # router.py, service.py, schema.py
 │   │       ├── documents/          # model, crud, schema, service, router, pipeline (hook + register_pipeline_runner)
-│   │       ├── text_extraction/    # model, crud, schema, service (render lock), router, prompts (PDF parser + vision)
+│   │       ├── text_extraction/    # model, crud, schema, service (PDF text layer; scans via vision.service), router
+│   │       ├── vision/             # 0009: model (document_layouts), crud, schema (layout DTOs, PageAnalysis), service
+│   │       │                       # (analyse_scanned, extract_tables, get_layout, page images), router (/layout, /pages/{n}/image),
+│   │       │                       # prompts (vision.v1), images (render lock, rendering), layout (pdfplumber tables + blocks)
 │   │       ├── structured_extraction/  # model, crud, schema (InvoiceData), service (extract + ground_extraction), router, prompts
 │   │       ├── validation/         # pure: schema (report, issue codes), service (validate_invoice, convert_currency, expected_fields), currencies (data)
 │   │       ├── guardrails/         # pure (0008): schema (grounding + confidence DTOs), service (check_grounding,
 │   │       │                       # score_confidence), matching (normalisation, number / date / identifier / text / currency matchers)
-│   │       ├── agent/              # model, crud, schema, service, router, prompts, runner (AgentRunner), tools (6 document tools)
+│   │       ├── agent/              # model, crud, schema, service, router, prompts, runner (AgentRunner), tools (7 document tools)
 │   │       ├── observability/      # model (llm_calls), crud, schema, service (recorder, trace, metrics), router, pricing
 │   │       └── client_config/      # router, service, schema: GET /api/config (no DB)
 │   ├── migrations/
@@ -55,16 +59,19 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   │   ├── script.py.mako
 │   │   └── versions/               # 0001_enable_pgvector.py, 0002_create_documents.py, 0003_create_document_texts.py,
 │   │                               # 0004_create_extractions.py, 0005_create_agent_runs.py, 0006_create_llm_calls.py,
-│   │                               # 0007_guardrails.py (grounding, confidence and attempt columns)
+│   │                               # 0007_guardrails.py (grounding, confidence and attempt columns),
+│   │                               # 0008_vision.py (document_layouts, extractions.line_items_source)
 │   ├── tests/
 │   │   ├── conftest.py             # test DB, migrate once, client / fake_llm / storage fixtures, no-op pipeline,
 │   │   │                           # no LLM recorder by default (opt in: agent_pipeline, llm_recorder), retry_waits (no backoff sleep)
 │   │   ├── core/                   # test_llm, test_llm_retries, test_storage, test_errors, test_logging
 │   │   ├── modules/health/         # test_router, test_service
 │   │   ├── modules/documents/      # conftest (byte samples, pipeline spy), test_router, test_service
-│   │   ├── modules/text_extraction/  # conftest (make_document), samples (PDF/image builders), test_router, test_service, test_render_lock
-│   │   ├── modules/structured_extraction/  # conftest (make_document with text, invoice()), test_schema, test_service, test_grounding, test_router
-│   │   ├── modules/guardrails/     # test_matching, test_service, test_layering
+│   │   ├── modules/text_extraction/  # conftest (make_document), samples (PDF/image builders), test_router, test_service
+│   │   ├── modules/vision/         # conftest, samples (invoice PDFs with tables, scanned images), test_layout, test_service,
+│   │   │                           # test_router, test_render_lock
+│   │   ├── modules/structured_extraction/  # conftest (make_document with text, invoice()), test_schema, test_service, test_grounding, test_vision_inputs, test_router
+│   │   ├── modules/guardrails/     # test_matching, test_service, test_layout_grounding, test_layering
 │   │   ├── modules/validation/     # conftest (make_invoice(), line(), TODAY), test_validate_invoice, test_convert_currency, test_currencies, test_schema, test_layering
 │   │   ├── modules/agent/          # conftest (tool_turn, text_turn, happy_script, invoice_pdf, agent_pipeline), test_runner, test_tools,
 │   │   │                           # test_service, test_router, test_guardrails
@@ -84,7 +91,7 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   │   ├── main.tsx                # Poppins (Latin), QueryClientProvider, createBrowserRouter
 │   │   ├── App.tsx                 # route table: / (Upload), /documents, /documents/:id, /metrics, * (not found)
 │   │   ├── index.css               # Tailwind, `.dark` variant, semantic colour tokens (light + dark, incl. trace series,
-│   │   │                           # highlight and the validated confidence-split colours), base styles
+│   │   │                           # highlight, the validated confidence-split colours and the 0009 block-type colours), base styles
 │   │   ├── api/
 │   │   │   ├── client.ts           # request(), ApiError (network_error for failed fetch), one function per endpoint (+ test)
 │   │   │   ├── types.ts            # DTO types mirroring the backend schemas (money/dates as strings)
@@ -93,6 +100,7 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   │   │                           # agents (tool → role lanes), trace (timeline rows, bar geometry, usage per lane),
 │   │   │                           # upload (client checks, MAX_FILES 5), errors (friendly text),
 │   │   │                           # confidence (labels, score format, highlight spans),
+│   │   │                           # layout (0009: block meta, box geometry, "Show on page" rows),
 │   │   │                           # theme, cx, useDocumentTitle
 │   │   ├── components/
 │   │   │   ├── ui/                 # Button (+ buttonClasses), Badge, Card, Alert/ErrorAlert, Dialog (native <dialog>),
@@ -110,9 +118,11 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   │   │   │                       # RawTextSection (lazy), AgentActivity + AgentLanes (multi-agent view, tokens per lane),
 │   │   │   │                       # TraceSection + TraceTimeline (0007 waterfall), ReprocessButton (confirm dialog),
 │   │   │   │                       # ConfidenceSummary (0008: overall chip, Needs review banner),
-│   │   │   │                       # labels (+ page and TraceSection tests)
+│   │   │   │                       # LayoutSection + TablesView + PagePreview (0009: Tables & layout card),
+│   │   │   │                       # labels (+ page, TraceSection and LayoutSection tests)
 │   │   │   └── metrics/            # MetricsPage (/metrics: KPI tiles, Guardrails section, by model / by purpose,
-│   │   │                           # ?days= window) (+ test), GuardrailsSection (0008, confidence split bar)
+│   │   │                           # ?days= window) (+ test), GuardrailsSection (0008, confidence split bar),
+│   │   │                           # VisionSection (0009)
 │   │   ├── pages/NotFoundPage.tsx
 │   │   └── test/                   # setup (jsdom polyfills), fetchMock (route-based fetch stub), fixtures, render (whole app)
 │   ├── vite.config.ts              # React + Tailwind plugins, /api dev proxy, Vitest config
@@ -141,12 +151,14 @@ forward `/api` to the backend.
 | GET | `/api/documents/{document_id}` | `documents` | 200 `DocumentRead`; 404 unknown id; 422 id not a UUID |
 | GET | `/api/documents` | `documents` | `?limit=1..100 (20)&offset=0&status=` → 200 `DocumentList`, newest first |
 | GET | `/api/documents/{document_id}/text` | `text_extraction` | 200 `DocumentTextResponse` once text exists (any document status); 404 unknown id; 422 id not a UUID; 409 `text_not_ready` (still `processing`) / `text_unavailable` (`completed` / `failed`, message includes the document's error). Read-only: never starts an extraction or calls OpenAI |
-| GET | `/api/documents/{document_id}/extraction` | `structured_extraction` | 200 `ExtractionResponse` once structured data exists (any document status); 404 unknown id; 422 id not a UUID; 409 `extraction_not_ready` (still `processing`) / `extraction_unavailable` (`completed` / `failed`, message includes the document's error). Read-only: never extracts or calls OpenAI. Includes `grounding` (0008; null until checked) |
+| GET | `/api/documents/{document_id}/extraction` | `structured_extraction` | 200 `ExtractionResponse` once structured data exists (any document status); 404 unknown id; 422 id not a UUID; 409 `extraction_not_ready` (still `processing`) / `extraction_unavailable` (`completed` / `failed`, message includes the document's error). Read-only: never extracts or calls OpenAI. Includes `grounding` (0008; null until checked) and `line_items_source` (0009: `table` / `model`; null before 0009) |
+| GET | `/api/documents/{document_id}/layout` | `vision` | 200 `LayoutResponse` (newest analysis + `history` metadata); 404 unknown id; 422 id not a UUID; 409 `layout_not_ready` (still `processing`) / `layout_unavailable` (no analysis: before 0009 or failed early). Read-only |
+| GET | `/api/documents/{document_id}/pages/{n}/image` | `vision` | 200 `image/jpeg` preview (long side 1600 px, rendered on request under the render lock, `Cache-Control: private, max-age=3600`); PDFs: any page 1..N, images: page 1; 404 `page_not_found` / `not_found`; 422 `n < 1` |
 | GET | `/api/documents/{document_id}/result` | `agent` | 200 `AgentResult` (incl. `confidence`, 0008) when `completed` (latest completed run); 409 `result_not_ready` (`processing`) / `result_unavailable` (`failed`, message includes the document's error); 404; 422. Read-only |
 | POST | `/api/documents/{document_id}/reprocess` | `agent` | 202 `DocumentUploadResponse` (`processing`) and a background agent run with forced re-extraction; 409 `already_processing`; 404; 422; 502 `llm_not_configured` |
 | GET | `/api/documents/{document_id}/runs` | `agent` | 200 `AgentRunRead[]`, newest first, each with its tool-call `steps`; 404; 422 |
 | GET | `/api/documents/{document_id}/trace` | `observability` | `?run_id=` (default: latest run) → 200 `DocumentTrace`; 404 `not_found` (document) / `run_not_found` (run not of this document); 422 non-UUID. A document with no run yet → `run: null`, `spans: []`. Read-only |
-| GET | `/api/metrics/summary` | `observability` | `?days=1..365` (default: all time) → 200 `MetricsSummary` (incl. `guardrails`, 0008), computed live; 422 out of range |
+| GET | `/api/metrics/summary` | `observability` | `?days=1..365` (default: all time) → 200 `MetricsSummary` (incl. `guardrails`, 0008, and `vision`, 0009), computed live; 422 out of range |
 | GET | `/api/config` | `client_config` | 200 `ClientConfig` — public settings for the UI; no secrets, no DB |
 | GET | `/api/docs` | FastAPI | Swagger UI (`/api/openapi.json` for the schema) |
 
@@ -162,20 +174,31 @@ forward `/api` to the backend.
 | `UploadedFile` (internal) | `documents` | `filename`, `content_type`, `data: bytes` — router → service |
 | `DocumentSource` (internal) | `documents` | `document_id: UUID`, `content_type`, `storage_key` (the `storage_path` column), `status`, `error: str \| null` — returned by `documents.service.get_document_source` for other modules; no route exposes it |
 | `ExtractionMethod` | `text_extraction` | `pdf_parser` \| `vision` |
-| `PageTranscription` (LLM output) | `text_extraction` | `text: str`, `legible: bool` — one vision call per page, strict structured output |
 | `DocumentTextRead` (internal) | `text_extraction` | every `document_texts` column (`id`, `document_id`, `raw_text`, `method`, `page_count`, `model`, `prompt_version`, `created_at`, `updated_at`) |
 | `DocumentTextResponse` | `text_extraction` | `document_id: UUID`, `raw_text`, `method`, `page_count` |
 | `DocumentType` | `structured_extraction` | `invoice` \| `receipt` \| `unknown` |
 | `LineItem` | `structured_extraction` | `description`, `quantity`, `unit_price`, `amount` — all required, nullable; numbers are `Decimal` |
 | `InvoiceData` (LLM output + 0004 input) | `structured_extraction` | `document_type`, `vendor`, `vendor_address`, `vendor_tax_id`, `customer_name`, `customer_address`, `invoice_number`, `invoice_date: date`, `due_date: date`, `payment_terms`, `currency` (3 upper-case letters), `subtotal`, `tax`, `total_amount` (`Decimal`), `line_items: LineItem[]`. Strict structured-output schema: every field required + nullable, `additionalProperties: false`, money as JSON `number`; blank text → null. In JSON (DB, API) money is a decimal string and dates are `YYYY-MM-DD` |
-| `ExtractionRead` (internal) | `structured_extraction` | every `extractions` column, `data: InvoiceData`, `grounding: ExtractionGrounding \| null` |
-| `ExtractionResponse` | `structured_extraction` | `document_id: UUID`, `structured_data: InvoiceData`, `model`, `prompt_version`, `attempts`, `grounding: ExtractionGrounding \| null` (0008) |
+| `PageAnalysis` (LLM output) | `vision` | `text`, `legible`, `tables: {header: str[], rows: str[][]}[]`, `blocks: {type, text}[]` — one vision call per page (0009 D2), strict structured output |
+| `BlockType` / `ColumnRole` / `TableKind` / `TableStrategy` | `vision` | `header \| document_info \| bill_to \| line_items \| totals \| payment \| other` / `description \| quantity \| unit_price \| amount \| other` / `line_items \| other` / `lines \| text \| vision` |
+| `Box` | `vision` | `[x0, y0, x1, y1]`, fractions (0–1) of the page, origin top-left |
+| `Table` | `vision` | `index`, `pages[]`, `box` (first page; null for vision), `strategy`, `header[] \| null`, `columns: ColumnRole[]`, `kind`, `rows: {page, cells[], box, cell_boxes[]}[]` (body rows only) |
+| `LayoutBlock` | `vision` | `type`, `page`, `order` (reading order, 0-based), `text`, `box` (null for vision) |
+| `LayoutAnalysis` / `LayoutRead` (internal) | `vision` | `source: ExtractionMethod`, `layout_version` (`layout.v1` / `vision.v1`), `page_count`, `pages: {page, width, height}[]`, `tables`, `blocks`, `model`; `LayoutRead` adds `id`, `document_id`, `run_id`, `created_at` |
+| `LayoutResponse` | `vision` | `document_id`, `layout_id`, `source`, `layout_version`, `run_id`, `created_at`, `page_count`, `pages`, `tables`, `blocks`, `history: {layout_id, created_at, source, layout_version, run_id}[]` (older analyses, newest first) |
+| `TablesSummary` | `vision` | `source`, `available`, `pages`, `tables: {index, pages, kind, columns, rows}[]`, `line_item_table`, `blocks: {type: count}`, `reused` — what the `extract_tables` tool returns (no cell text) |
+| `TableItem` / `TableRef` / `TableLineItems` (internal) | `vision` | a line item copied from a table row (`Decimal` values), where it was printed (`table`, `row`, `page`, `box`, `cell_boxes`, `columns`), and the pair lists |
+| `LayoutStats` (internal) | `vision` | `layouts_analysed`, `documents_with_line_item_table`, `tables_found` (newest analysis per document) |
+| `ExtractionRead` (internal) | `structured_extraction` | every `extractions` column, `data: InvoiceData`, `grounding: ExtractionGrounding \| null`, `line_items_source` (0009) |
+| `ExtractionResponse` | `structured_extraction` | `document_id: UUID`, `structured_data: InvoiceData`, `model`, `prompt_version`, `attempts`, `grounding: ExtractionGrounding \| null` (0008), `line_items_source: table \| model \| null` (0009) |
+| `LineItemSourceStats` (internal) | `structured_extraction` | `from_table`, `from_model` — line items by source, for metrics (0009) |
 | `GroundingStats` (internal) | `structured_extraction` | `extractions`, `values_checked`, `values_grounded`, `grounding_retry_extractions` — for metrics |
-| `GroundingStatus` / `ValueKind` / `MatchKind` | `guardrails` | `grounded \| weak \| ungrounded \| inferred \| skipped` / `number \| date \| identifier \| text \| currency \| classification` / `exact \| number \| date \| identifier \| fuzzy \| symbol \| ocr` |
-| `FieldGrounding` | `guardrails` | `path` (`vendor`, `line_items[2].amount`), `value` (as checked), `kind`, `status`, `match`, `similarity` (fuzzy 0–100), `page`, `start` / `end` (offsets into `raw_text`), `note` |
+| `GroundingStatus` / `ValueKind` / `MatchKind` | `guardrails` | `grounded \| weak \| ungrounded \| inferred \| skipped` / `number \| date \| identifier \| text \| currency \| classification` / `exact \| number \| date \| identifier \| fuzzy \| symbol \| ocr \| table` (`table`: copied by code from a table cell, 0009) |
+| `FieldLocation` | `guardrails` | `page`, `box`, `block: BlockType \| null`, `table`, `row`, `column: ColumnRole \| null` — where a value sits on the page (0009) |
+| `FieldGrounding` | `guardrails` | `path` (`vendor`, `line_items[2].amount`), `value` (as checked), `kind`, `status`, `match`, `similarity` (fuzzy 0–100), `page`, `start` / `end` (offsets into `raw_text`), `note`, `location: FieldLocation \| null` (0009) |
 | `GroundingReport` | `guardrails` | `method`, `checked`, `grounded`, `weak`, `ungrounded`, `inferred`, `fields: FieldGrounding[]` (schema order; nulls absent) |
 | `ExtractionGrounding` | `guardrails` | `report` (kept attempt), `kept_attempt`, `grounding_retries`, `attempts: {attempt, reason: initial \| schema \| grounding, valid, ungrounded[]}[]`, `checked_at` — stored in `extractions.grounding` |
-| `FieldConfidence` | `guardrails` | `path`, `score` (0–1, 3 decimals), `label: high \| medium \| low`, `grounding`, `page`, `start`, `end`, `reasons[]` |
+| `FieldConfidence` | `guardrails` | `path`, `score` (0–1, 3 decimals), `label: high \| medium \| low`, `grounding`, `page`, `start`, `end`, `location` (0009), `reasons[]` |
 | `ConfidenceReport` | `guardrails` | `overall`, `label`, `needs_review`, `review_fields[]` (key fields first), `components {fields, completeness, validation}`, `fields: {path: FieldConfidence}` — `AgentResult.confidence` |
 | `Severity` | `validation` | `error` \| `warning` \| `info` |
 | `ValidationStatus` | `validation` | `pass` \| `warn` \| `fail` — any error → `fail`; else any warning → `warn`; else `pass` (info never counts) |
@@ -193,7 +216,7 @@ forward `/api` to the backend.
 | `ToolSpan` | `observability` | `kind: "tool"`, `step_index`, `turn`, `tool`, `status`, `error_code`, `started_at`, `offset_ms` (from run start), `duration_ms` |
 | `LLMSpan` | `observability` | `kind: "llm"`, `id`, `step_index` (null for agent-loop turns), `purpose`, `agent`, `model`, `prompt_version`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost_usd`, `status: ok \| error`, `error_code`, `started_at`, `offset_ms`, `duration_ms`, `attempt` (1 = first try; 2+ = transient retry, 0008) |
 | `DocumentTrace` | `observability` | `document_id`, `uploaded_at`, `run: TraceRun \| null`, `llm_calls_recorded` (false for runs before 0007), `totals: UsageTotals`, `by_purpose` / `by_agent: GroupTotals[]` (timeline order), `spans: (ToolSpan \| LLMSpan)[]` (start order; a step before the calls made in it), `prices_as_of` |
-| `MetricsSummary` | `observability` | `window_days`, `since`, `generated_at`, `ledger_since` (earliest ledger row), `documents {total, processing, completed, failed, success_rate}`, `runs: RunStats`, `llm` (`UsageTotals` + `error_rate`, `documents_with_usage`, `avg_tokens_per_document`, `avg_cost_per_document` over completed runs that have ledger rows), `by_model` / `by_purpose: GroupTotals[]` (most tokens first), `guardrails` (0008: `runs_scored`, `avg_confidence`, `by_label`, `needs_review`, `needs_review_rate`, `values_checked`, `values_grounded`, `grounding_rate`, `grounding_retry_extractions`, `transient_retries`), `prices_as_of` |
+| `MetricsSummary` | `observability` | `window_days`, `since`, `generated_at`, `ledger_since` (earliest ledger row), `documents {total, processing, completed, failed, success_rate}`, `runs: RunStats`, `llm` (`UsageTotals` + `error_rate`, `documents_with_usage`, `avg_tokens_per_document`, `avg_cost_per_document` over completed runs that have ledger rows), `by_model` / `by_purpose: GroupTotals[]` (most tokens first), `guardrails` (0008: `runs_scored`, `avg_confidence`, `by_label`, `needs_review`, `needs_review_rate`, `values_checked`, `values_grounded`, `grounding_rate`, `grounding_retry_extractions`, `transient_retries`), `vision` (0009: `layouts_analysed`, `documents_with_line_item_table`, `tables_found`, `line_items_from_table`, `line_items_from_model`, `line_items_table_share`, `pages_via_vision` (ok `vision_transcription` ledger rows), `multimodal_calls`), `prices_as_of` |
 | `ConfidenceStats` (internal) | `agent` | `runs_scored`, `avg_confidence`, `needs_review`, `by_label` — `agent.service.confidence_stats` |
 | `RunStats` | `agent` | `total`, `running`, `completed`, `failed`, `avg_ms`, `p50_ms`, `p95_ms` (completed runs; `percentile_cont`) — `agent.service.run_stats`, part of `MetricsSummary` |
 | `DocumentCounts` (internal) | `documents` | `processing`, `completed`, `failed` — `documents.service.count_by_status` |
@@ -208,7 +231,8 @@ Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_ty
 (502, `LLMOutputError`: a structured reply failed its schema; carries `errors`),
 `run_not_found` (404, trace route),
 `internal_error` (500), `conflict` (409, base) with `text_not_ready` / `text_unavailable` /
-`text_not_extracted` / `extraction_not_ready` / `extraction_unavailable` (409),
+`text_not_extracted` / `extraction_not_ready` / `extraction_unavailable` / `layout_not_ready` /
+`layout_unavailable` (409), `page_not_found` (404, page image route),
 `unreadable_document` / `no_text_found` (422, `TextExtractionError`; raised by
 `text_extraction.service.extract_text`, never returned by the GET route), and
 `invalid_llm_output` / `llm_refused` (502, `StructuredExtractionError`; raised by
@@ -223,7 +247,7 @@ tools before the summary), `agent_max_steps`, `internal_error`, `run_abandoned` 
 `running` row closed by the next run), or the fatal tool error's own code
 (`unreadable_document`, `no_text_found`, `invalid_llm_output`, `llm_refused`, `llm_error`, …).
 Recoverable tool error codes (sent back to the model only): `text_not_extracted`,
-`structured_data_missing`, `grounding_required` (0008), `validation_required`, `conversion_not_needed`,
+`tables_required` (0009), `structured_data_missing`, `grounding_required` (0008), `validation_required`, `conversion_not_needed`,
 `unsupported_currency`, `invalid_amount`, `invalid_arguments`, `unknown_tool`.
 
 ### Validation issue codes
@@ -259,7 +283,7 @@ when the currency is missing or invalid).
 | Engine | PostgreSQL 18 + pgvector (`pgvector/pgvector:pg18-trixie`) |
 | Container / volume | `appfuxion-db` / `appfuxion_pgdata` (mounted at `/var/lib/postgresql`) |
 | Driver | SQLAlchemy 2.0 + psycopg 3 (`postgresql+psycopg://`) |
-| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents`; `0003` creates `document_texts`; `0004` creates `extractions`; `0005` creates `agent_runs`; `0006` creates `llm_calls`; `0007` adds `extractions.grounding`, `agent_runs.overall_confidence` / `needs_review`, `llm_calls.attempt` |
+| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents`; `0003` creates `document_texts`; `0004` creates `extractions`; `0005` creates `agent_runs`; `0006` creates `llm_calls`; `0007` adds `extractions.grounding`, `agent_runs.overall_confidence` / `needs_review`, `llm_calls.attempt`; `0008` creates `document_layouts` and adds `extractions.line_items_source` |
 | ID rule | Every table's primary key is a native `UUID` (v4, `uuid.uuid4()`), exposed as a plain dashed UUID |
 | Test database | `appfuxion_test` on the same server (created and migrated by `conftest.py`) |
 
@@ -292,7 +316,7 @@ One row per document, written by `text_extraction.service.extract_text`.
 | `method` | `VARCHAR(20)` | `CHECK` `pdf_parser` / `vision` |
 | `page_count` | `INTEGER` | `CHECK >= 1`; pages in the file (1 for images), even when vision was capped |
 | `model` | `VARCHAR(100)` NULL | Vision model that answered; null for `pdf_parser` |
-| `prompt_version` | `VARCHAR(50)` NULL | `text_extraction.v1` for vision rows; null for `pdf_parser` |
+| `prompt_version` | `VARCHAR(50)` NULL | `vision.v1` for vision rows since 0009 (`text_extraction.v1` before); null for `pdf_parser` |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | `now()` defaults; `updated_at` bumped when `force=True` replaces the row |
 
 Constraints: `pk_document_texts`, `uq_document_texts_document_id`,
@@ -309,15 +333,41 @@ One row per document, written by `structured_extraction.service.extract_structur
 | `document_id` | `UUID` UNIQUE | FK `documents.id`, `ON DELETE CASCADE` |
 | `data` | `JSONB` | `InvoiceData` in JSON mode: money as decimal strings, dates as ISO strings |
 | `model` | `VARCHAR(100)` | Model that answered |
-| `prompt_version` | `VARCHAR(50)` | `structured_extraction.v2` (0008) |
+| `prompt_version` | `VARCHAR(50)` | `structured_extraction.v3` (0009) |
 | `attempts` | `INTEGER` | `CHECK >= 1`; extraction calls in total (schema + grounding retries, ≤ 3) |
 | `prompt_tokens`, `completion_tokens` | `INTEGER` | `CHECK >= 0`; summed over the replies received (a reply rejected by validation is not counted) |
 | `grounding` | `JSONB` NULL | `ExtractionGrounding` once `check_grounding` ran (0008); reset to NULL when the row is re-extracted |
+| `line_items_source` | `VARCHAR(10)` NULL | `CHECK` `table` / `model` (0009); null for rows from before 0009 |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | `now()` defaults; `updated_at` bumped when `force=True` replaces the row |
 
 Constraints: `pk_extractions`, `uq_extractions_document_id`,
 `fk_extractions_document_id_documents`, `ck_extractions_attempts_positive`,
-`ck_extractions_prompt_tokens_non_negative`, `ck_extractions_completion_tokens_non_negative`.
+`ck_extractions_prompt_tokens_non_negative`, `ck_extractions_completion_tokens_non_negative`,
+`ck_extractions_line_items_source_valid`.
+
+### Table `document_layouts`
+
+One row per layout analysis (0009, append-only: a reprocess adds a row; the newest is current).
+Written by `vision.service.save_layout` (scans: during `extract_text`; text PDFs: by `extract_tables`).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `UUID` PK | v4 |
+| `document_id` | `UUID` | FK `documents.id`, `ON DELETE CASCADE` |
+| `run_id` | `UUID` NULL | FK `agent_runs.id`, `ON DELETE SET NULL`; the run that made it (from the trace context) |
+| `source` | `VARCHAR(20)` | `CHECK` `pdf_parser` / `vision` |
+| `layout_version` | `VARCHAR(50)` | `layout.v1` (pdfplumber rules) or `vision.v1` (prompt) |
+| `model` | `VARCHAR(100)` NULL | Vision model; null for `pdf_parser` |
+| `page_count` | `INTEGER` | `CHECK >= 1`; pages in the file |
+| `pages` | `JSONB` | `PageInfo[]` (pages analysed: every page for text PDFs, ≤ `VISION_MAX_PAGES` for scans) |
+| `tables` | `JSONB` | `Table[]` |
+| `blocks` | `JSONB` | `LayoutBlock[]` |
+| `created_at` | `TIMESTAMPTZ` | `clock_timestamp()` default (distinct within one transaction) |
+
+Constraints: `pk_document_layouts`, `fk_document_layouts_document_id_documents`,
+`fk_document_layouts_run_id_agent_runs`, `ck_document_layouts_source_valid`,
+`ck_document_layouts_page_count_positive`; index `ix_document_layouts_document_created`
+(`document_id`, `created_at`).
 
 ### Table `agent_runs`
 
@@ -394,10 +444,10 @@ Read by `app/core/config.py` from environment variables, then `../.env` / `.env`
 | `DATABASE_URL` | blank | Optional full URL; derived from `POSTGRES_*` when blank |
 | `AGENT_MODE` | `multi` | `single` or `multi`; `multi` logs a warning and runs the single Document Agent until B4 |
 | `BASE_CURRENCY` | `MYR` | 3-letter ISO 4217 code; totals in another currency are converted to it (it must be in the rate table for a conversion to succeed) |
-| `AGENT_MAX_STEPS` | `10` | 1–30; most model turns per agent run (`agent_max_steps` when reached); 10 since 0008 added `check_grounding` |
+| `AGENT_MAX_STEPS` | `12` | 1–30; most model turns per agent run (`agent_max_steps` when reached); 10 since 0008 added `check_grounding`, 12 since 0009 added `extract_tables` |
 | `MAX_UPLOAD_MB` | `10` | Upload size limit |
 | `STORAGE_DIR` | `./storage` | Upload directory (relative to `backend/`); `/app/storage` in Compose |
-| `VISION_MAX_PAGES` | `5` | Most pages of a scanned PDF sent to the vision model (>= 1); later pages are skipped and logged |
+| `VISION_MAX_PAGES` | `5` | Most pages of a scanned PDF sent to the vision model (>= 1), for the page call and for multimodal extraction (0009); later pages are skipped and logged |
 | `LOG_LEVEL` | `INFO` | Root log level |
 | `FRONTEND_PORT` | `8080` | Published port of the nginx frontend (Compose only) |
 
@@ -418,6 +468,7 @@ ROUTERS: list[APIRouter] = [
     health_router,
     documents_router,
     text_extraction_router,
+    vision_router,
     structured_extraction_router,
     agent_router,
     observability_router,
@@ -441,9 +492,10 @@ back to `processing` with one conditional `UPDATE` (409 `already_processing` oth
 
 The agent (`app/modules/agent/`): `runner.AgentRunner(llm, tools, max_steps=…)` is the
 shared OpenAI tool-calling loop (one step = one model turn, temperature 0, strict function
-tools, `ToolError(code, message, fatal)`); `tools.build_document_tools(ctx)` binds the five
+tools, `ToolError(code, message, fatal)`); `tools.build_document_tools(ctx)` binds the seven
 tools to one document and enforces the order (each tool needs its predecessor *in this run*;
-0008: `validate_invoice` refuses with `grounding_required` until `check_grounding` ran for the
+0009: `extract_structured_data` refuses with `tables_required` until `extract_tables` ran after
+the current `extract_text`; 0008: `validate_invoice` refuses with `grounding_required` until `check_grounding` ran for the
 current extraction, and computes the confidence report right after validating);
 `service.run_document_agent(document_id, *, llm, storage, trigger, force)` opens its own
 session, records an `agent_runs` row, saves each step as it happens, and completes or fails
@@ -451,24 +503,45 @@ the run and the document in one transaction.
 
 Text extraction is a plain service function, called by the agent's tool:
 `text_extraction.service.extract_text(db, storage, llm, document_id, *, force=False)` is what
-the 0005 `extract_text` tool calls. PDF rendering holds the module's `_RENDER_LOCK`
-(pypdfium2 is not thread-safe). It commits its own row, never changes the document status and
-raises `TextExtractionError` / `LLMError` for the caller to turn into `failed`.
+the 0005 `extract_text` tool calls. Since 0009 scans go through
+`vision.service.analyse_scanned` (one `PageAnalysis` call per page: text + tables + blocks);
+`text_extraction` builds `raw_text` from the texts and saves the layout with
+`vision.service.save_layout` in the same commit. PDF rendering holds `vision/images.py`'s
+`_RENDER_LOCK` (pypdfium2 is not thread-safe). It commits its own row, never changes the
+document status and raises `TextExtractionError` / `LLMError` for the caller to turn into
+`failed`.
 `text_extraction.service.find_text(db, document_id)` returns the saved text or `None` (never
 extracts) for other modules.
 
+Vision (0009): `vision.service.extract_tables(db, storage, document_id, *, method, force)` is
+what the `extract_tables` tool calls (text PDFs: `pdfplumber` analysis in `vision/layout.py`,
+no LLM, reusing the newest `layout.v1` row unless forced; scans: the row `extract_text` wrote).
+`find_layout` returns the newest analysis, `line_items_from_layout` the line items code copies
+from a confident line-item table, `page_images` the vision JPEGs for multimodal extraction, and
+`render_page_image` the preview JPEG. `vision.service` calls only `documents.service` and reads
+`run_id` from the trace context; `text_extraction`, `structured_extraction`, `agent` and
+`observability` call it (one way, no cycles).
+
 Structured extraction is the same kind of function:
-`structured_extraction.service.extract_structured_data(db, llm, document_id, *, force=False)`
+`structured_extraction.service.extract_structured_data(db, llm, document_id, *, force=False,
+storage=None)`
 reads the saved text through `text_extraction.service.find_text` (409 `text_not_extracted`
 when there is none), makes one `response_format=InvoiceData` call (temperature 0), retries
 once with the validation errors fed back, commits its own row, never changes the document
 status, and raises `StructuredExtractionError` / `LLMError` for the caller to turn into
-`failed`.
+`failed`. Since 0009 the prompt (`structured_extraction.v3`) carries the newest layout's tables
+in a `<tables>` section; for text PDFs with a confident line-item table code replaces the
+model's `line_items` after every call (`line_items_source = table`); for scans with `storage`
+the page images are attached and the call is labelled `multimodal_extraction`.
 
-Guardrails (0008) are pure too: `guardrails.service.check_grounding(data, raw_text, method)`
+Guardrails (0008) are pure too: `guardrails.service.check_grounding(data, raw_text, method, *,
+layout=None, table_refs=None)`
 looks every non-null value up in the full text (rules in `guardrails/matching.py`) and
 `score_confidence(data, grounding, validation)` returns the `ConfidenceReport` (or `None` for
-unknown documents). `structured_extraction.service.ground_extraction(db, llm, document_id)`
+unknown documents). With a layout (0009) table-copied line items are `grounded` at their cell
+(`MatchKind.TABLE`, `location`) and a total found only away from the totals block and from any
+total label becomes `weak`. `structured_extraction.service.ground_extraction(db, llm,
+document_id, *, storage=None)`
 is what the `check_grounding` tool calls: it checks the saved extraction, re-asks the model
 with the ungrounded values (`Purpose.GROUNDING_RETRY`) while the 3-call budget
 (`EXTRACTION_BUDGET`, shared with the schema retry) lasts, keeps the attempt with the fewest
@@ -499,13 +572,16 @@ line (INFO ok / ERROR failed) and hands an `LLMCallRecord` to the recorder regis
 dropped. Callers only label their calls with `app.core.logging.bind_trace(...)` (a context
 manager that also works as a decorator): the agent service binds `run_id` + `agent`, the
 runner binds `purpose=agent_loop` around each turn and `step_index` around each tool
-handler, and `_transcribe_pages` (vision), `_extract_with_retry` (structured extraction) and
+handler, and `vision.service._analyse_pages` (vision), `_extract_with_retry` (structured or
+multimodal extraction) and
 the summary tool's `_complete` are decorated with their `purpose` and `prompt_version`. An
 unlabelled chat call is recorded as `unknown` with a warning. Tests register no recorder by
 default; ledger tests opt in with `llm_recorder`. The trace and metrics read other modules
 through `documents.service` (`get_document`, `count_by_status`) and `agent.service`
 (`list_runs`, `run_stats`, `completed_run_ids`, `confidence_stats`), and since 0008
-`structured_extraction.service.grounding_stats` for the metrics `guardrails` block.
+`structured_extraction.service.grounding_stats` for the metrics `guardrails` block; since 0009
+`vision.service.layout_stats`, `structured_extraction.service.line_item_source_stats` and the
+ledger counts by purpose fill the `vision` block.
 
 ## Dependencies added in 0002
 

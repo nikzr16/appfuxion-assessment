@@ -106,6 +106,7 @@ def happy_script(data: InvoiceData | None = None, summary: str = SUMMARY) -> lis
     """Agent turns plus the structured-extraction and summary replies, in call order."""
     return [
         tool_turn("extract_text"),
+        tool_turn("extract_tables"),
         tool_turn("extract_structured_data"),
         data or invoice(),
         tool_turn("check_grounding"),
@@ -121,7 +122,7 @@ def agent_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = get_settings()
     monkeypatch.setattr(settings, "agent_mode", "single")
     monkeypatch.setattr(settings, "base_currency", "MYR")
-    monkeypatch.setattr(settings, "agent_max_steps", 10)
+    monkeypatch.setattr(settings, "agent_max_steps", 12)
 
 
 @pytest.fixture

@@ -12,6 +12,7 @@ import {
   getConfig,
   getDocument,
   getExtraction,
+  getLayout,
   getMetrics,
   getResult,
   getRuns,
@@ -36,6 +37,7 @@ export const queryKeys = {
   runs: (id: string) => ["runs", id] as const,
   text: (id: string) => ["text", id] as const,
   extraction: (id: string) => ["extraction", id] as const,
+  layout: (id: string) => ["layout", id] as const,
   traces: (id: string) => ["trace", id] as const,
   trace: (id: string, runId: string | undefined) => ["trace", id, runId ?? "latest"] as const,
   metrics: (days: number | undefined) => ["metrics", days ?? "all"] as const,
@@ -136,6 +138,11 @@ export function useExtraction(id: string, { enabled }: { enabled: boolean }) {
   });
 }
 
+/** The newest tables-and-layout analysis (feature 0009); `null` when there is none. */
+export function useLayout(id: string, { enabled }: { enabled: boolean }) {
+  return useQuery({ queryKey: queryKeys.layout(id), queryFn: () => getLayout(id), enabled });
+}
+
 /**
  * When a document leaves `processing`, fetch its final runs, result and saved data once,
  * and refresh the list so its row shows the new status.
@@ -151,6 +158,7 @@ export function useRefreshOnFinish(id: string, status: DocumentStatus | undefine
         queryKeys.result(id),
         queryKeys.text(id),
         queryKeys.extraction(id),
+        queryKeys.layout(id),
         queryKeys.documents,
       ]) {
         void queryClient.invalidateQueries({ queryKey: key });

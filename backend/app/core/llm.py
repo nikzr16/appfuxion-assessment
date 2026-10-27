@@ -51,6 +51,7 @@ class Purpose(StrEnum):
 
     VISION_TRANSCRIPTION = "vision_transcription"
     STRUCTURED_EXTRACTION = "structured_extraction"
+    MULTIMODAL_EXTRACTION = "multimodal_extraction"
     GROUNDING_RETRY = "grounding_retry"
     AGENT_LOOP = "agent_loop"
     SUMMARY = "summary"

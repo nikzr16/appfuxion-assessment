@@ -233,21 +233,40 @@ class DocumentText:
 # -- Matchers -----------------------------------------------------------------------------
 
 
-def find_number(doc: DocumentText, value: Decimal) -> Match | None:
-    """Equal value under either separator convention; sign ignored ("(50.00)" = -50)."""
+def find_numbers(doc: DocumentText, value: Decimal) -> list[Match]:
+    """Every match of ``value`` in document order, exact readings before OCR corrections."""
     target = abs(value).normalize()
+    matches: list[Match] = []
     for number in doc.numbers:
         if target in number.values:
             if number.ocr:
-                return Match(
-                    GroundingStatus.WEAK,
-                    MatchKind.OCR,
-                    number.start,
-                    number.end,
-                    note="Matched after correcting likely OCR misreads",
+                matches.append(
+                    Match(
+                        GroundingStatus.WEAK,
+                        MatchKind.OCR,
+                        number.start,
+                        number.end,
+                        note="Matched after correcting likely OCR misreads",
+                    )
                 )
-            return Match(GroundingStatus.GROUNDED, MatchKind.NUMBER, number.start, number.end)
-    return None
+            else:
+                matches.append(
+                    Match(GroundingStatus.GROUNDED, MatchKind.NUMBER, number.start, number.end)
+                )
+    return matches
+
+
+def find_number(doc: DocumentText, value: Decimal) -> Match | None:
+    """Equal value under either separator convention; sign ignored ("(50.00)" = -50)."""
+    matches = find_numbers(doc, value)
+    return matches[0] if matches else None
+
+
+def line_at(doc: DocumentText, start: int, end: int) -> str:
+    """The raw line (between newlines) that contains ``start..end``."""
+    left = doc.raw.rfind("\n", 0, start) + 1
+    right = doc.raw.find("\n", end)
+    return doc.raw[left : right if right != -1 else len(doc.raw)]
 
 
 def _date_patterns(day: date) -> list[tuple[re.Pattern[str], bool]]:

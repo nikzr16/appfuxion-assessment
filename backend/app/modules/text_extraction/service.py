@@ -1,45 +1,32 @@
-import base64
 import io
 import logging
 import re
-import threading
 import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 import pdfplumber
-import pypdfium2 as pdfium
-from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.errors import AppError, ConflictError, LLMError, NotFoundError
-from app.core.llm import LLMClient, Purpose
-from app.core.logging import bind_document_id, bind_trace
+from app.core.errors import AppError, ConflictError, NotFoundError
+from app.core.llm import LLMClient
+from app.core.logging import bind_document_id
 from app.core.storage import Storage
 from app.modules.documents import service as documents_service
 from app.modules.documents.schema import DocumentStatus
-from app.modules.text_extraction import crud, prompts
+from app.modules.text_extraction import crud
 from app.modules.text_extraction.model import DocumentText
-from app.modules.text_extraction.schema import (
-    DocumentTextRead,
-    ExtractionMethod,
-    PageTranscription,
-)
+from app.modules.text_extraction.schema import DocumentTextRead, ExtractionMethod
+from app.modules.vision import service as vision_service
+from app.modules.vision.schema import LayoutAnalysis
 
 logger = logging.getLogger(__name__)
 
 # A PDF page "has text" when at least this many characters remain after removing
 # whitespace and pdfminer's ``(cid:N)`` glyph placeholders.
 MIN_PAGE_CHARS = 20
-RENDER_DPI = 200
-# Pages with an absurd size are rendered smaller than RENDER_DPI so memory stays bounded.
-MAX_RENDER_SIDE = 4096
-MAX_IMAGE_SIDE = 2048
-JPEG_QUALITY = 90
-# Serialises pypdfium2, which is not thread-safe (see ``_render_pages``).
-_RENDER_LOCK = threading.Lock()
 
 _NO_TEXT_PLACEHOLDERS = re.compile(r"\(cid:\d+\)|\s")
 
@@ -58,6 +45,8 @@ class _Extraction:
     page_count: int
     # The vision model that answered; ``None`` for ``pdf_parser``.
     model: str | None = None
+    # Tables and blocks the vision pages returned (0009); ``None`` for ``pdf_parser``.
+    layout: LayoutAnalysis | None = None
 
 
 def _to_read(row: DocumentText) -> DocumentTextRead:
@@ -78,52 +67,6 @@ def _join_pages(pages: Sequence[str], page_count: int) -> str:
     return "\n\n".join(f"--- Page {number} ---\n{text}" for number, text in enumerate(pages, 1))
 
 
-def _to_rgb(image: Image.Image) -> Image.Image:
-    """Convert to RGB, flattening transparency onto white (black would hide dark text)."""
-    if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
-        rgba = image.convert("RGBA")
-        flat = Image.new("RGB", rgba.size, "white")
-        flat.paste(rgba, mask=rgba.getchannel("A"))
-        return flat
-    return image.convert("RGB")
-
-
-def _prepare_image(source: bytes | Image.Image) -> bytes:
-    """Upright, RGB, long side <= ``MAX_IMAGE_SIDE``, JPEG bytes (smaller base64 payload)."""
-    try:
-        image = Image.open(io.BytesIO(source)) if isinstance(source, bytes) else source
-        image = _to_rgb(ImageOps.exif_transpose(image))
-        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
-        buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=JPEG_QUALITY)
-    except (Image.DecompressionBombError, UnidentifiedImageError, OSError) as exc:
-        raise TextExtractionError("The image could not be read.") from exc
-    return buffer.getvalue()
-
-
-def _render_pages(data: bytes, max_pages: int) -> list[bytes]:
-    """Render the first ``max_pages`` PDF pages at ``RENDER_DPI`` and prepare them for vision.
-
-    pdfium is not thread-safe and background runs share a thread pool, so the whole render
-    holds ``_RENDER_LOCK`` (the rendered bitmaps share memory with pdfium until prepared).
-    """
-    try:
-        with _RENDER_LOCK:
-            pdf = pdfium.PdfDocument(data)
-            try:
-                images: list[bytes] = []
-                for index in range(min(max_pages, len(pdf))):
-                    page = pdf[index]
-                    width, height = page.get_size()
-                    scale = min(RENDER_DPI / 72, MAX_RENDER_SIDE / (max(width, height) or 1))
-                    images.append(_prepare_image(page.render(scale=scale).to_pil()))
-            finally:
-                pdf.close()
-    except pdfium.PdfiumError as exc:
-        raise TextExtractionError("The PDF pages could not be rendered.") from exc
-    return images
-
-
 def _read_text_layer(data: bytes) -> list[str]:
     """Text of every PDF page (empty string where there is none)."""
     try:
@@ -141,50 +84,26 @@ def _read_text_layer(data: bytes) -> list[str]:
 # -- Vision ---------------------------------------------------------------------------
 
 
-@bind_trace(purpose=Purpose.VISION_TRANSCRIPTION, prompt_version=prompts.PROMPT_VERSION)
-def _transcribe_pages(
-    llm: LLMClient, images: Sequence[bytes], page_count: int
-) -> tuple[list[str], str | None]:
-    """One structured vision call per page. Returns the page texts and the model used."""
-    texts: list[str] = []
-    model: str | None = None
-    for number, jpeg in enumerate(images, start=1):
-        encoded = base64.b64encode(jpeg).decode("ascii")
-        response = llm.complete(
-            [
-                {"role": "system", "content": prompts.SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompts.page_prompt(page=number, total=page_count),
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{encoded}",
-                                "detail": "high",
-                            },
-                        },
-                    ],
-                },
-            ],
-            vision=True,
-            response_format=PageTranscription,
-            temperature=0,
+def _scan(llm: LLMClient, data: bytes, *, is_image: bool, page_count: int) -> _Extraction:
+    """Vision pages (text + tables + blocks in one call per page, 0009 D2)."""
+    max_pages = get_settings().vision_max_pages
+    if not is_image and page_count > max_pages:
+        logger.warning(
+            "vision page cap applied", extra={"pages_total": page_count, "pages_sent": max_pages}
         )
-        parsed = response.parsed
-        if not isinstance(parsed, PageTranscription):
-            raise LLMError(f"The vision model returned no transcription for page {number}.")
-        model = model or response.model
-        texts.append(parsed.text.strip() if parsed.legible else "")
-    return texts, model
+    try:
+        result = vision_service.analyse_scanned(
+            llm, data, is_image=is_image, page_count=page_count, max_pages=max_pages
+        )
+    except vision_service.UnreadableImageError as exc:
+        raise TextExtractionError(exc.message) from exc
+    return _Extraction(
+        result.texts, ExtractionMethod.VISION, page_count, result.model, result.analysis
+    )
 
 
 def _extract_image(data: bytes, llm: LLMClient) -> _Extraction:
-    texts, model = _transcribe_pages(llm, [_prepare_image(data)], page_count=1)
-    return _Extraction(texts, ExtractionMethod.VISION, 1, model)
+    return _scan(llm, data, is_image=True, page_count=1)
 
 
 def _extract_pdf(data: bytes, llm: LLMClient) -> _Extraction:
@@ -194,14 +113,7 @@ def _extract_pdf(data: bytes, llm: LLMClient) -> _Extraction:
         return _Extraction([t.rstrip() for t in texts], ExtractionMethod.PDF_PARSER, page_count)
 
     # No text layer on at least one page: the whole document goes through vision.
-    max_pages = get_settings().vision_max_pages
-    if page_count > max_pages:
-        logger.warning(
-            "vision page cap applied", extra={"pages_total": page_count, "pages_sent": max_pages}
-        )
-    images = _render_pages(data, max_pages)
-    pages, model = _transcribe_pages(llm, images, page_count)
-    return _Extraction(pages, ExtractionMethod.VISION, page_count, model)
+    return _scan(llm, data, is_image=False, page_count=page_count)
 
 
 # -- Use cases ------------------------------------------------------------------------
@@ -255,11 +167,16 @@ def extract_text(
                 "page_count": result.page_count,
                 "model": result.model,
                 "prompt_version": (
-                    prompts.PROMPT_VERSION if result.method is ExtractionMethod.VISION else None
+                    vision_service.VISION_LAYOUT_VERSION
+                    if result.method is ExtractionMethod.VISION
+                    else None
                 ),
             },
             overwrite=force,
         )
+        if result.layout is not None:
+            # The scan's tables and blocks, saved with its text (0009 D9).
+            vision_service.save_layout(db, document_id, result.layout)
         db.commit()
         logger.info(
             "text extracted",

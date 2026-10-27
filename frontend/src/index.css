@@ -41,6 +41,18 @@
   --conf-high: #047857;
   --conf-medium: #d97706;
   --conf-low: #b91c1c;
+  /* Layout block types (0009), in reading order: header, document info, bill-to, line items,
+     totals, payment, other. Outlines drawn on the page image (always a white page) and
+     legend swatches on either surface, so one set serves both themes: validated as a
+     categorical set on #ffffff and #111827 (lightness band, CVD and normal-vision
+     separation, >= 3:1 contrast). Every box and swatch also carries a text label. */
+  --block-header: #3987e5;
+  --block-document-info: #d95926;
+  --block-bill-to: #199e70;
+  --block-line-items: #c98500;
+  --block-totals: #d55181;
+  --block-payment: #008300;
+  --block-other: #9085e9;
   --shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 4px 16px rgb(15 23 42 / 0.05);
   color-scheme: light;
 }
@@ -108,6 +120,13 @@
   --color-conf-high: var(--conf-high);
   --color-conf-medium: var(--conf-medium);
   --color-conf-low: var(--conf-low);
+  --color-block-header: var(--block-header);
+  --color-block-document-info: var(--block-document-info);
+  --color-block-bill-to: var(--block-bill-to);
+  --color-block-line-items: var(--block-line-items);
+  --color-block-totals: var(--block-totals);
+  --color-block-payment: var(--block-payment);
+  --color-block-other: var(--block-other);
 
   --shadow-card: var(--shadow);
 }

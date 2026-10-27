@@ -34,6 +34,7 @@ def upsert(db: Session, *, values: Mapping[str, Any], overwrite: bool) -> Extrac
                 "attempts": statement.excluded.attempts,
                 "prompt_tokens": statement.excluded.prompt_tokens,
                 "completion_tokens": statement.excluded.completion_tokens,
+                "line_items_source": statement.excluded.line_items_source,
                 "grounding": None,  # a new extraction is never shown with an old report
                 "updated_at": func.now(),
             },
@@ -74,6 +75,19 @@ def grounding_totals(db: Session, *, since: datetime | None = None) -> Row[Any]:
             Extraction.grounding["grounding_retries"].astext.cast(Integer) > 0
         ),
     ).where(Extraction.grounding.is_not(None))
+    if since is not None:
+        query = query.where(Extraction.updated_at >= since)
+    return db.execute(query).one()
+
+
+def line_item_totals(db: Session, *, since: datetime | None = None) -> Row[Any]:
+    """Line items (``from_table``, ``from_model``) of extractions updated since ``since``."""
+    items = func.jsonb_array_length(Extraction.data["line_items"])
+
+    def total(source: str) -> Any:
+        return func.coalesce(func.sum(items).filter(Extraction.line_items_source == source), 0)
+
+    query = select(total("table").label("from_table"), total("model").label("from_model"))
     if since is not None:
         query = query.where(Extraction.updated_at >= since)
     return db.execute(query).one()

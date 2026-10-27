@@ -6,7 +6,8 @@ with the 0004 validation report and schema completeness into per-field and overa
 The callers (``structured_extraction`` re-extraction, the agent's tools) store the results.
 """
 
-from collections.abc import Iterator
+import re
+from collections.abc import Iterator, Sequence
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -19,14 +20,17 @@ from app.modules.guardrails.schema import (
     ConfidenceReport,
     FieldConfidence,
     FieldGrounding,
+    FieldLocation,
     GroundingReport,
     GroundingStatus,
+    MatchKind,
     ValueKind,
 )
 from app.modules.structured_extraction.schema import DocumentType, InvoiceData
 from app.modules.text_extraction.schema import ExtractionMethod
 from app.modules.validation import service as validation_service
 from app.modules.validation.schema import Severity, ValidationReport, ValidationStatus
+from app.modules.vision.schema import BlockType, ColumnRole, LayoutAnalysis, TableRef
 
 # -- What each field is (D2) -------------------------------------------------------------
 
@@ -87,6 +91,13 @@ VALIDATION_SCORE: dict[ValidationStatus, float] = {
 HIGH_THRESHOLD = 0.85
 MEDIUM_THRESHOLD = 0.60
 
+# A total label on the same line as the total's value (feature 0009, layout-aware grounding).
+TOTAL_LABEL = re.compile(
+    r"\b(grand\s+total|total|amount\s+due|balance\s+due|jumlah\s+besar|jumlah)\b", re.IGNORECASE
+)
+NOT_NEXT_TO_TOTAL = "Found, but not next to a total label"
+_LINE_PATH = re.compile(r"line_items\[(\d+)\]\.(\w+)")
+
 
 # -- Grounding ---------------------------------------------------------------------------
 
@@ -125,8 +136,69 @@ def _find(doc: DocumentText, kind: ValueKind, value: Any) -> Match | None:
     return matching.find_text(doc, value)
 
 
-def check_grounding(data: InvoiceData, raw_text: str, method: ExtractionMethod) -> GroundingReport:
-    """Look every non-null value of ``data`` up in ``raw_text`` (the full text, D2)."""
+def _from_table(field: FieldGrounding, refs: Sequence[TableRef]) -> FieldGrounding:
+    """A line-item value code copied from a table cell is grounded at that cell (0009 D8)."""
+    found = _LINE_PATH.fullmatch(field.path)
+    if found is None or int(found.group(1)) >= len(refs):
+        return field
+    ref = refs[int(found.group(1))]
+    role = ColumnRole(found.group(2))
+    column = ref.columns.index(role) if role in ref.columns else None
+    box = ref.box
+    if column is not None and ref.cell_boxes and column < len(ref.cell_boxes):
+        box = ref.cell_boxes[column] or ref.box
+    return field.model_copy(
+        update={
+            "status": GroundingStatus.GROUNDED,
+            "match": MatchKind.TABLE,
+            "page": ref.page,
+            "note": f"Read from table {ref.table + 1}, row {ref.row + 1}",
+            "location": FieldLocation(
+                page=ref.page,
+                box=box,
+                block=BlockType.LINE_ITEMS,
+                table=ref.table,
+                row=ref.row,
+                column=role,
+            ),
+        }
+    )
+
+
+def _place_total(
+    field: FieldGrounding, doc: DocumentText, data: InvoiceData, layout: LayoutAnalysis
+) -> FieldGrounding:
+    """The total must sit in a totals block or on a line with a total label (0009 D8)."""
+    if field.path != "total_amount" or data.total_amount is None:
+        return field
+    totals = [b for b in layout.blocks if b.type is BlockType.TOTALS]
+    if not totals:
+        return field  # nothing to compare with: 0008 behaviour
+    for block in totals:
+        if matching.find_number(DocumentText(block.text, doc.method), data.total_amount):
+            location = FieldLocation(page=block.page, box=block.box, block=BlockType.TOTALS)
+            return field.model_copy(update={"location": location})
+    if field.status is not GroundingStatus.GROUNDED:
+        return field
+    for match in matching.find_numbers(doc, data.total_amount):
+        if TOTAL_LABEL.search(matching.line_at(doc, match.start, match.end)):
+            return field
+    return field.model_copy(update={"status": GroundingStatus.WEAK, "note": NOT_NEXT_TO_TOTAL})
+
+
+def check_grounding(
+    data: InvoiceData,
+    raw_text: str,
+    method: ExtractionMethod,
+    *,
+    layout: LayoutAnalysis | None = None,
+    table_refs: Sequence[TableRef] | None = None,
+) -> GroundingReport:
+    """Look every non-null value of ``data`` up in ``raw_text`` (the full text, D2).
+
+    With a layout (feature 0009), line items code copied from a table are grounded at their
+    cell (``table_refs``, one per item) and the total is checked against the totals block.
+    """
     doc = DocumentText(raw_text, method)
     fields: list[FieldGrounding] = []
     for path, kind, value in _values(data):
@@ -163,6 +235,11 @@ def check_grounding(data: InvoiceData, raw_text: str, method: ExtractionMethod) 
             )
         )
 
+    if table_refs:
+        fields = [_from_table(f, table_refs) for f in fields]
+    if layout is not None:
+        fields = [_place_total(f, doc, data, layout) for f in fields]
+
     def count(status: GroundingStatus) -> int:
         return sum(1 for f in fields if f.status is status)
 
@@ -194,6 +271,8 @@ def _applies(issue_field: str, path: str) -> bool:
 
 def _grounding_reason(field: FieldGrounding) -> str:
     where = f" on page {field.page}" if field.page is not None else ""
+    if field.match is MatchKind.TABLE:
+        return f"{field.note or 'Read from a table'}{where}"
     if field.status is GroundingStatus.GROUNDED:
         return f"Found in the document text{where}"
     if field.status is GroundingStatus.INFERRED:
@@ -232,6 +311,7 @@ def _score_field(
         page=field.page,
         start=field.start,
         end=field.end,
+        location=field.location,
         reasons=reasons,
     )
 

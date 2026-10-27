@@ -27,8 +27,10 @@ def test_get_extraction_returns_the_structured_data(
         "prompt_version",
         "attempts",
         "grounding",
+        "line_items_source",
     }
     assert body["grounding"] is None  # not checked yet (feature 0008)
+    assert body["line_items_source"] == "model"  # no layout analysed (feature 0009)
     assert body["document_id"] == str(document_id)
     assert body["model"] == "fake-model"
     assert body["prompt_version"] == prompts.PROMPT_VERSION

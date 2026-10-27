@@ -18,7 +18,7 @@ def test_pgvector_type_is_usable(db_session: Session) -> None:
 
 def test_alembic_version_is_at_head(db_session: Session) -> None:
     version = db_session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert version == "0007"
+    assert version == "0008"
 
 
 def test_documents_table_has_a_native_uuid_primary_key(db_session: Session) -> None:
@@ -203,6 +203,7 @@ def test_extractions_table_has_native_uuid_keys_and_jsonb_data(db_session: Sessi
         "prompt_tokens",
         "completion_tokens",
         "grounding",
+        "line_items_source",
         "created_at",
         "updated_at",
     }
@@ -224,6 +225,7 @@ def test_extractions_table_has_its_constraints(db_session: Session) -> None:
         "ck_extractions_attempts_positive": "c",
         "ck_extractions_prompt_tokens_non_negative": "c",
         "ck_extractions_completion_tokens_non_negative": "c",
+        "ck_extractions_line_items_source_valid": "c",
     }
 
 
@@ -581,4 +583,91 @@ def test_llm_call_attempt_defaults_to_1_and_rejects_0(db_session: Session) -> No
     assert db_session.execute(text("SELECT attempt FROM llm_calls")).scalar_one() == 1
     with pytest.raises(IntegrityError):
         db_session.execute(text("UPDATE llm_calls SET attempt = 0"))
+    db_session.rollback()
+
+
+# -- vision (0008) -----------------------------------------------------------------------
+
+
+def _insert_layout(db_session: Session, document_id: str, *, source: str = "pdf_parser") -> None:
+    db_session.execute(
+        text(
+            "INSERT INTO document_layouts (id, document_id, source, layout_version, page_count, "
+            "pages, tables, blocks) VALUES (gen_random_uuid(), :document_id, :source, "
+            "'layout.v1', 1, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb)"
+        ),
+        {"document_id": document_id, "source": source},
+    )
+
+
+def test_document_layouts_table_has_its_columns(db_session: Session) -> None:
+    columns = dict(
+        db_session.execute(
+            text(
+                "SELECT column_name, udt_name FROM information_schema.columns "
+                "WHERE table_name = 'document_layouts'"
+            )
+        ).all()
+    )
+    assert columns == {
+        "id": "uuid",
+        "document_id": "uuid",
+        "run_id": "uuid",
+        "source": "varchar",
+        "layout_version": "varchar",
+        "model": "varchar",
+        "page_count": "int4",
+        "pages": "jsonb",
+        "tables": "jsonb",
+        "blocks": "jsonb",
+        "created_at": "timestamptz",
+    }
+
+
+def test_document_layouts_table_has_its_constraints_and_index(db_session: Session) -> None:
+    constraints = dict(
+        db_session.execute(
+            text(
+                "SELECT conname, contype FROM pg_constraint "
+                "WHERE conrelid = 'document_layouts'::regclass AND contype <> 'n'"
+            )
+        ).all()
+    )
+    assert constraints == {
+        "pk_document_layouts": "p",
+        "fk_document_layouts_document_id_documents": "f",
+        "fk_document_layouts_run_id_agent_runs": "f",
+        "ck_document_layouts_source_valid": "c",
+        "ck_document_layouts_page_count_positive": "c",
+    }
+    indexes = db_session.execute(
+        text("SELECT indexname FROM pg_indexes WHERE tablename = 'document_layouts'")
+    ).scalars()
+    assert "ix_document_layouts_document_created" in set(indexes)
+
+
+def test_document_layouts_keep_history_and_cascade(db_session: Session) -> None:
+    document_id = _insert_document(db_session)
+    _insert_layout(db_session, document_id)
+    _insert_layout(db_session, document_id, source="vision")
+    count = "SELECT count(*) FROM document_layouts"
+    assert db_session.execute(text(count)).scalar() == 2
+    db_session.execute(text("DELETE FROM documents WHERE id = :id"), {"id": document_id})
+    assert db_session.execute(text(count)).scalar() == 0
+    db_session.rollback()
+
+
+def test_document_layouts_reject_an_unknown_source(db_session: Session) -> None:
+    document_id = _insert_document(db_session)
+    with pytest.raises(IntegrityError):
+        _insert_layout(db_session, document_id, source="ocr")
+    db_session.rollback()
+
+
+def test_line_items_source_accepts_table_and_model_only(db_session: Session) -> None:
+    document_id = _insert_document(db_session)
+    _insert_extraction(db_session, document_id)
+    db_session.execute(text("UPDATE extractions SET line_items_source = 'table'"))
+    with pytest.raises(IntegrityError):
+        db_session.execute(text("UPDATE extractions SET line_items_source = 'guess'"))
     db_session.rollback()
