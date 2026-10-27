@@ -29,7 +29,13 @@ The five core parts of the brief and all five bonus tasks are done
 - **Observability:** every LLM call's tokens, cost and latency; a per-document trace; and a
   metrics page.
 
-How it fits together, and why, is in [`ENGINEERING_NOTES.md`](ENGINEERING_NOTES.md#summary-for-reviewers).
+How it fits together, and why, is in the
+[summary for reviewers](ENGINEERING_NOTES.md#summary-for-reviewers) at the top of
+`ENGINEERING_NOTES.md`: an architecture diagram, the
+[step-by-step flow](ENGINEERING_NOTES.md#how-a-document-flows-step-by-step),
+[the agents and their tools](ENGINEERING_NOTES.md#the-agents),
+[the bonus tasks](ENGINEERING_NOTES.md#the-bonus-tasks-in-brief) and the
+[engineering practices](ENGINEERING_NOTES.md#production-style-engineering-practices).
 
 ## Stack
 
@@ -292,6 +298,21 @@ ENGINEERING_NOTES.md   Architecture decisions, prompt design, limitations, produ
 ```
 
 The full structural reference is [`docs/reference/folder-structure.md`](docs/reference/folder-structure.md).
+
+### Where the brief's example folders are
+
+The backend is organised by feature (`backend/app/modules/<feature>/`), each with only the
+layers it needs (`router` → `service` → `crud` → `model`, plus `schema`), rather than by
+technical layer. The brief's example folders map onto it like this:
+
+| Brief's example | In this repo |
+|---|---|
+| `api/` | Each module's `router.py` (for example `modules/documents/router.py` serves `POST /api/documents`); wired in `backend/app/main.py` |
+| `agent/` | `modules/agent/`: `runner.py` (the shared tool-calling loop), `coordinator.py` (the three agents), `tools.py`, `prompts.py`, `query.py` (Ask AI) |
+| `tools/` | Plain service functions in the modules the agents call: `text_extraction`, `vision`, `structured_extraction`, `guardrails`, `validation`, `retrieval`; `modules/agent/tools.py` exposes them to the model |
+| `vision/` | `modules/vision/` (page rendering, the vision model call, table and layout detection) and `modules/text_extraction/` |
+| `tests/` | `backend/tests/` (mirrors `app/modules/`) and `frontend/src/**/*.test.ts(x)` |
+| `README.md`, `ENGINEERING_NOTES.md` | At the repository root |
 
 ## Documentation
 
