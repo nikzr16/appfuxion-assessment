@@ -6,20 +6,30 @@ structured JSON, validates the numbers with deterministic code, and writes a sho
 summary. AI agents (OpenAI tool calling) orchestrate the steps, and past invoices are
 searchable with pgvector.
 
-> **Status:** the core pipeline works end to end (features `0000`–`0005`): upload a
-> document and the **Document Agent** extracts its text (PDF parser or OpenAI vision),
-> turns it into structured JSON, validates it with deterministic code, converts a foreign
-> total to `BASE_CURRENCY` when needed, and writes a summary that mentions every validation
-> problem. The web UI (`0006`), observability (`0007`: a token ledger, per-document traces
-> and a metrics page) and guardrails (`0008`: every extracted value is checked against the
-> document's text, each field and document gets a confidence score, and API errors and
-> invented values are retried) and vision (`0009`: tables and layout blocks are found on every
-> page, line items of text PDFs are copied from their table by code, and scans and photos are
-> read by a multimodal model that sees the page images) and retrieval (`0010`: every processed
-> invoice is indexed with pgvector, compared with the vendor's earlier invoices for duplicate
-> numbers and unusual amounts, and searchable through the **Ask AI** chat) and multi-agent processing (`0011`: a plain-Python
-> Coordinator runs an **Extraction**, a **Validation** and a **Reporting** agent, each with its
-> own prompt and tools) are in place; see [`docs/product-roadmap.md`](docs/product-roadmap.md).
+## What it does
+
+The five core parts of the brief and all five bonus tasks are done
+([roadmap](docs/product-roadmap.md)).
+
+- **Upload** a PDF, JPG or PNG through the web UI or `POST /api/documents`; processing runs
+  in the background.
+- **Three AI agents** run in order under a plain-Python Coordinator: an **Extraction**, a
+  **Validation** and a **Reporting** agent, each with its own prompt and tools
+  (`AGENT_MODE=single` runs one Document Agent with every tool instead).
+- **Text extraction:** text PDFs are parsed locally for free; scans and photos are read by an
+  OpenAI vision model. Tables and layout blocks are found on every page.
+- **Structured JSON** through OpenAI structured outputs, then a **grounding check**: every
+  value is looked up in the document's own text, and each field gets a confidence score.
+- **Deterministic validation:** totals, tax, line items, dates and currency are checked by
+  code; a foreign total is converted to `BASE_CURRENCY` (MYR); duplicate invoice numbers and
+  unusual amounts are flagged against the vendor's history.
+- **A summary** that must mention every validation problem (checked by code).
+- **Ask AI:** a chat over all stored invoices (pgvector search, with every number checked
+  against the data).
+- **Observability:** every LLM call's tokens, cost and latency; a per-document trace; and a
+  metrics page.
+
+How it fits together, and why, is in [`ENGINEERING_NOTES.md`](ENGINEERING_NOTES.md#summary-for-reviewers).
 
 ## Stack
 
@@ -43,6 +53,23 @@ docker compose up --build
 | Web UI | http://localhost:8080 (change with `FRONTEND_PORT`) |
 | API (through the UI's proxy) | http://localhost:8080/api/health |
 | API docs (Swagger) | http://localhost:8080/api/docs |
+
+### Try it with the samples
+
+[`samples/`](samples/) holds five made-up documents, each showing a different path. Drag them
+onto the upload page; each takes about 10–20 seconds and costs under a cent.
+
+| File | What it shows |
+|---|---|
+| `lumen-office-INV-2026-0418.pdf` | A clean invoice: validation passes, line items copied from the ruled table |
+| `damai-perabot-unruled-malay.pdf` | Malay column titles, an unruled table found by code, `DD/MM/YYYY` dates |
+| `harbourline-cloud-USD-HC-2291.pdf` | A USD total converted to MYR with a dated rate |
+| `brightpath-logistics-with-errors.pdf` | Validation **fails**: due date before the invoice date, and a total that does not add up |
+| `kopi-contoh-receipt.png` | A tilted receipt image read by the vision model |
+
+Upload the same file twice to see the duplicate-invoice-number warning. Then open **Ask AI**
+and ask "How much have we spent in total?". The samples are rebuilt with
+`uv run --project backend python samples/make_samples.py`.
 
 ### Use the web UI
 
@@ -258,6 +285,7 @@ changing it.
 backend/        FastAPI app (app/core shared infrastructure, app/modules/<feature>), Alembic, tests
 frontend/       Vite + React + TypeScript + Tailwind UI
 db/             Standalone Postgres + pgvector compose file
+samples/        Made-up invoices and a receipt to try the app with, plus their generator
 docs/           Roadmap, PRDs, plans, reference docs, decision log
 .github/        CI workflow
 ENGINEERING_NOTES.md   Architecture decisions, prompt design, limitations, production improvements
@@ -267,8 +295,10 @@ The full structural reference is [`docs/reference/folder-structure.md`](docs/ref
 
 ## Documentation
 
-- [`ENGINEERING_NOTES.md`](ENGINEERING_NOTES.md) - design decisions, limitations, and next steps
+- [`ENGINEERING_NOTES.md`](ENGINEERING_NOTES.md) - design decisions, prompt design, limitations, and production improvements (start with its summary for reviewers)
 - [`docs/product-roadmap.md`](docs/product-roadmap.md) - phases and feature status
+- [`docs/prd/`](docs/prd/), [`docs/plan/`](docs/plan/), [`docs/decisions/`](docs/decisions/) - per feature: the requirements, the implementation plan, and where the build differed from the plan
+- [`docs/reference/folder-structure.md`](docs/reference/folder-structure.md) - every module, endpoint, table and issue code
 
 ## Built on the Orchestral Harness
 

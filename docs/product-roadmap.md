@@ -87,7 +87,7 @@ PRD yet; their numbers are expectations from the local feature map.
 
 | PRD | Module | Status | Notes |
 |---|---|---|---|
-| — | `README.md`, `ENGINEERING_NOTES.md` | planned | Docs pass; may not need its own PRD |
+| — | `README.md`, `ENGINEERING_NOTES.md`, `samples/` | in progress | No PRD (docs pass). Done 2026-10-27: reviewer summary + diagram in ENGINEERING_NOTES, README "What it does" and samples, five made-up sample documents; clean clone from GitHub built and ran on fresh volumes (902 backend + 157 frontend tests green, all five samples processed); a flaky frontend wait fixed. Left: merge `dev` → `main`, make the repo public |
 
 ## Cross-Cutting Concerns
 

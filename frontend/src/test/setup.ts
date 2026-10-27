@@ -1,7 +1,11 @@
 import "@testing-library/jest-dom/vitest";
 import { focusManager } from "@tanstack/react-query";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
+
+// Full pages (the detail page loads several queries) can take over the default 1 s to
+// render on a busy or slower machine; findBy* still resolves as soon as the element appears.
+configure({ asyncUtilTimeout: 5000 });
 
 // jsdom gaps: <dialog> modal methods, scrollIntoView and matchMedia.
 if (typeof HTMLDialogElement !== "undefined") {
