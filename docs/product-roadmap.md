@@ -70,6 +70,7 @@ PRD yet; their numbers are expectations from the local feature map.
 
 **Trigger:** Phase 1 shipped (Phase 2 may run alongside).
 **Graduation criteria:** All five bonus tasks shipped; `AGENT_MODE=multi` is the default.
+**Status:** Graduated 2026-10-27 — 0007–0011 shipped; `multi` (the default) runs the Coordinator's three agents.
 
 | PRD | Module | Status | Notes |
 |---|---|---|---|
@@ -77,7 +78,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | `docs/prd/0008-guardrails-prd.md` | `modules/guardrails` | shipped | B2 — grounding check, confidence scoring, retries; CI run #28 green (2026-10-27) |
 | `docs/prd/0009-vision-prd.md` | `modules/vision` | shipped | B5 — tables, layout, multimodal; CI run #32 green (2026-10-27) |
 | `docs/prd/0010-retrieval-prd.md` | `modules/retrieval` + Query Agent | shipped | B3 — pgvector index, vendor-history checks, Ask AI chat (Query Agent, `POST /query`); CI run #36 green (2026-10-27) |
-| `docs/prd/0011-multi-agent-prd.md` | `modules/agent` (Coordinator + 3 agents) | in progress | B4 — Extraction / Validation / Reporting agents on `AgentRunner`, plain-Python Coordinator; `AGENT_MODE=multi` real; implemented, local checks green; shipped once CI is green |
+| `docs/prd/0011-multi-agent-prd.md` | `modules/agent` (Coordinator + 3 agents) | shipped | B4 — Extraction / Validation / Reporting agents on `AgentRunner`, plain-Python Coordinator; `AGENT_MODE=multi` real; CI run #41 green (2026-10-27) |
 
 ### Phase 4: Submission
 
@@ -114,7 +115,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | `docs/prd/0008-guardrails-prd.md` | 3 | guardrails | shipped |
 | `docs/prd/0009-vision-prd.md` | 3 | vision | shipped |
 | `docs/prd/0010-retrieval-prd.md` | 3 | retrieval | shipped |
-| `docs/prd/0011-multi-agent-prd.md` | 3 | agent (multi-agent) | in progress |
+| `docs/prd/0011-multi-agent-prd.md` | 3 | agent (multi-agent) | shipped |
 
 ## Prioritization Log
 
