@@ -13,6 +13,7 @@ ALLOWED_MODULE_IMPORTS = (
     "app.modules.validation.schema",
     "app.modules.validation.service",
     "app.modules.validation",  # ``from app.modules.validation import service``
+    "app.modules.vision.schema",  # layout-aware grounding (feature 0009)
 )
 FORBIDDEN_PREFIXES = (
     "fastapi",

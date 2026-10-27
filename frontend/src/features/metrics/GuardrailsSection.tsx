@@ -16,7 +16,7 @@ const SEGMENT_COLOR: Record<ConfidenceLabel, string> = {
   low: "bg-conf-low",
 };
 
-function Stat({ icon, label, value, hint }: { icon: ReactNode; label: string; value: ReactNode; hint: ReactNode }) {
+export function Stat({ icon, label, value, hint }: { icon: ReactNode; label: string; value: ReactNode; hint: ReactNode }) {
   return (
     <div className="min-w-0 rounded-xl bg-surface-2 px-4 py-3">
       <dt className="flex items-center gap-2 text-xs font-medium text-fg-muted">

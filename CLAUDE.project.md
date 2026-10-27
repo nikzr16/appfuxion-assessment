@@ -127,7 +127,7 @@ Rule of thumb: **AI does the thinking; code does the maths and keeps the order.*
 
 | Agent | LLM? | Tools | Source |
 |---|---|---|---|
-| Document Agent (single mode) | yes | extract_text, extract_structured_data, check_grounding, validate_invoice, convert_currency, generate_summary | Brief Part 4 (+ B2 grounding) |
+| Document Agent (single mode) | yes | extract_text, extract_tables, extract_structured_data, check_grounding, validate_invoice, convert_currency, generate_summary | Brief Part 4 (+ B2 grounding, B5 tables) |
 | Extraction Agent | yes | extract_text, extract_tables, extract_structured_data | Brief bonus (multi-agent) |
 | Validation Agent | yes — checks are deterministic code | validate_invoice, convert_currency, check_vendor_history | Brief bonus (multi-agent) |
 | Reporting Agent | yes | generate_summary, search_similar_invoices | Brief bonus (multi-agent) |
@@ -138,7 +138,9 @@ Rule of thumb: **AI does the thinking; code does the maths and keeps the order.*
   and a recorded tool-call log).
 - `AGENT_MODE=single|multi` (default `multi`).
 - Code guards: `generate_summary` refuses to run until `validate_invoice` has run, and
-  `validate_invoice` refuses until `check_grounding` has run for the current extraction (0008).
+  `validate_invoice` refuses until `check_grounding` has run for the current extraction (0008),
+  and `extract_structured_data` refuses until `extract_tables` has run after the current
+  `extract_text` (0009).
 
 ## Git Branching Model
 

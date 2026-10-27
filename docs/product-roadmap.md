@@ -75,7 +75,7 @@ PRD yet; their numbers are expectations from the local feature map.
 |---|---|---|---|
 | `docs/prd/0007-observability-prd.md` | `modules/observability` | shipped | B1 — token ledger, traces, metrics; CI run #24 green (2026-10-27) |
 | `docs/prd/0008-guardrails-prd.md` | `modules/guardrails` | shipped | B2 — grounding check, confidence scoring, retries; CI run #28 green (2026-10-27) |
-| *planned* 0009 | `modules/vision` | planned | B5 — tables, layout, multimodal |
+| `docs/prd/0009-vision-prd.md` | `modules/vision` | in progress | B5 — tables, layout, multimodal; implemented on `feature/0009-vision`, awaiting merge + CI |
 | *planned* 0010 | `modules/retrieval` + Query Agent | planned | B3 — pgvector |
 | *planned* 0011 | `modules/agent` (multi-agent) | planned | B4 — last, reuses every tool |
 
@@ -112,6 +112,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | `docs/prd/0006-frontend-prd.md` | 2 | frontend | shipped |
 | `docs/prd/0007-observability-prd.md` | 3 | observability | shipped |
 | `docs/prd/0008-guardrails-prd.md` | 3 | guardrails | shipped |
+| `docs/prd/0009-vision-prd.md` | 3 | vision | in progress |
 
 ## Prioritization Log
 

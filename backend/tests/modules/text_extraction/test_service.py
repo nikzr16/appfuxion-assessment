@@ -16,9 +16,11 @@ from app.core.llm import FakeLLM, LLMCall, LLMResponse, TokenUsage
 from app.core.storage import LocalStorage
 from app.modules.documents import service as documents_service
 from app.modules.documents.schema import DocumentStatus
-from app.modules.text_extraction import crud, prompts, service
+from app.modules.text_extraction import crud, service
 from app.modules.text_extraction.model import DocumentText
-from app.modules.text_extraction.schema import ExtractionMethod, PageTranscription
+from app.modules.text_extraction.schema import ExtractionMethod
+from app.modules.vision import images, prompts
+from app.modules.vision.schema import PageAnalysis
 from tests.modules.text_extraction import samples
 from tests.modules.text_extraction.conftest import MakeDocument
 
@@ -27,8 +29,8 @@ PNG = "image/png"
 JPEG = "image/jpeg"
 
 
-def _page(text: str = "INVOICE INV-001 Total RM 123.45") -> PageTranscription:
-    return PageTranscription(text=text, legible=True)
+def _page(text: str = "INVOICE INV-001 Total RM 123.45") -> PageAnalysis:
+    return PageAnalysis(tables=[], blocks=[], text=text, legible=True)
 
 
 def _sent_image(call: LLMCall) -> Image.Image:
@@ -126,11 +128,11 @@ def test_scanned_pdf_uses_one_vision_call_per_page(
     assert result.page_count == 2
     assert result.raw_text == "--- Page 1 ---\nfirst page text\n\n--- Page 2 ---\nsecond page text"
     assert result.model == "fake-model"
-    assert result.prompt_version == prompts.PROMPT_VERSION == "text_extraction.v1"
+    assert result.prompt_version == prompts.PROMPT_VERSION == "vision.v1"
     assert len(fake_llm.calls) == 2
     for number, call in enumerate(fake_llm.calls, start=1):
         assert call.vision is True
-        assert call.response_format is PageTranscription
+        assert call.response_format is PageAnalysis
         assert call.temperature == 0
         assert call.messages[0] == {"role": "system", "content": prompts.SYSTEM_PROMPT}
         text_part, image_part = call.messages[1]["content"]
@@ -187,7 +189,7 @@ def test_oversized_image_is_downscaled_before_sending(
     service.extract_text(db_session, storage, fake_llm, document_id)
 
     sent = _sent_image(fake_llm.calls[0])
-    assert max(sent.size) == service.MAX_IMAGE_SIDE
+    assert max(sent.size) == images.MAX_IMAGE_SIDE
     assert sent.size == (2048, 1536)  # aspect ratio kept
 
 
@@ -244,7 +246,7 @@ def test_empty_vision_page_keeps_its_marker(
     db_session: Session, storage: LocalStorage, fake_llm: FakeLLM, make_document: MakeDocument
 ) -> None:
     document_id = make_document(PDF, samples.scanned_pdf(pages=2))
-    fake_llm.queue(PageTranscription(text="", legible=False), _page("page two"))
+    fake_llm.queue(PageAnalysis(tables=[], blocks=[], text="", legible=False), _page("page two"))
 
     result = service.extract_text(db_session, storage, fake_llm, document_id)
 
@@ -367,8 +369,8 @@ def test_all_pages_illegible_is_no_text_found(
 ) -> None:
     document_id = make_document(PDF, samples.scanned_pdf(pages=2))
     fake_llm.queue(
-        PageTranscription(text="", legible=False),
-        PageTranscription(text="ghost text", legible=False),
+        PageAnalysis(tables=[], blocks=[], text="", legible=False),
+        PageAnalysis(tables=[], blocks=[], text="ghost text", legible=False),
     )
 
     with pytest.raises(service.TextExtractionError) as caught:
@@ -394,7 +396,7 @@ def test_blank_legible_text_is_no_text_found(
     db_session: Session, storage: LocalStorage, fake_llm: FakeLLM, make_document: MakeDocument
 ) -> None:
     document_id = make_document(PNG, samples.png_invoice())
-    fake_llm.queue(PageTranscription(text="  \n ", legible=True))
+    fake_llm.queue(PageAnalysis(tables=[], blocks=[], text="  \n ", legible=True))
 
     with pytest.raises(service.TextExtractionError) as caught:
         service.extract_text(db_session, storage, fake_llm, document_id)

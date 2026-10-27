@@ -6,6 +6,7 @@ import type {
   DocumentTrace,
   FieldConfidence,
   InvoiceData,
+  LayoutResponse,
   LLMSpan,
   ToolSpan,
   ToolStep,
@@ -275,6 +276,50 @@ export function makeConfidence(overrides: Partial<ConfidenceReport> = {}): Confi
       }),
       "line_items[0].amount": field("line_items[0].amount", { start: 0, end: 7 }),
     },
+    ...overrides,
+  };
+}
+
+/** A text-PDF layout (feature 0009): one line-item table and four blocks on one page. */
+export function makeLayout(overrides: Partial<LayoutResponse> = {}): LayoutResponse {
+  const row = (cells: string[], top: number): LayoutResponse["tables"][number]["rows"][number] => ({
+    page: 1,
+    cells,
+    box: [0.08, top, 0.92, top + 0.03],
+    cell_boxes: null,
+  });
+  return {
+    document_id: DOC_ID,
+    layout_id: "6b0d4c8e-2f4a-4a43-9f25-7c1f0a5a1c11",
+    source: "pdf_parser",
+    layout_version: "layout.v1",
+    run_id: null,
+    created_at: "2026-10-27T10:00:00Z",
+    page_count: 1,
+    pages: [{ page: 1, width: 595, height: 842 }],
+    tables: [
+      {
+        index: 0,
+        pages: [1],
+        box: [0.08, 0.3, 0.92, 0.42],
+        strategy: "lines",
+        header: ["Description", "Qty", "Unit Price", "Amount"],
+        columns: ["description", "quantity", "unit_price", "amount"],
+        kind: "line_items",
+        rows: [
+          row(["Express delivery", "3", "180.00", "540.00"], 0.33),
+          row(["Pallet storage", "6", "75.00", "480.00"], 0.36),
+          row(["Insurance", "1", "65.00", "65.00"], 0.39),
+        ],
+      },
+    ],
+    blocks: [
+      { type: "header", page: 1, order: 0, text: "Brightlane Logistics", box: [0.08, 0.05, 0.4, 0.1] },
+      { type: "document_info", page: 1, order: 1, text: "Invoice No: BL-88731", box: [0.6, 0.05, 0.9, 0.1] },
+      { type: "line_items", page: 1, order: 2, text: "Description | Qty", box: [0.08, 0.3, 0.92, 0.42] },
+      { type: "totals", page: 1, order: 3, text: "Total RM 1,182.60", box: [0.6, 0.45, 0.92, 0.5] },
+    ],
+    history: [],
     ...overrides,
   };
 }

@@ -15,6 +15,7 @@ class Extraction(Base):
         CheckConstraint("attempts >= 1", name="attempts_positive"),
         CheckConstraint("prompt_tokens >= 0", name="prompt_tokens_non_negative"),
         CheckConstraint("completion_tokens >= 0", name="completion_tokens_non_negative"),
+        CheckConstraint("line_items_source IN ('table', 'model')", name="line_items_source_valid"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -32,6 +33,9 @@ class Extraction(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer)
     # ``ExtractionGrounding`` in JSON mode once ``check_grounding`` ran (0008); NULL before.
     grounding: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # ``table`` when code copied the line items from the document's table (0009), else
+    # ``model``; NULL for rows from before 0009.
+    line_items_source: Mapped[str | None] = mapped_column(String(10), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -3,7 +3,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema, field_validator
 
@@ -24,6 +24,17 @@ def _blank_to_none(value: Any) -> Any:
 # (Pydantic's default schema would also allow a string such as "RM 12.30").
 Money = Annotated[Decimal, Field(allow_inf_nan=False), WithJsonSchema({"type": "number"})]
 Text = Annotated[str | None, BeforeValidator(_blank_to_none)]
+
+
+# Where ``line_items`` came from (feature 0009): copied by code from a table, or the model.
+LineItemsSource = Literal["table", "model"]
+
+
+class LineItemSourceStats(BaseModel):
+    """Line items of extractions in a window, by where they came from (feature 0009)."""
+
+    from_table: int
+    from_model: int
 
 
 class DocumentType(StrEnum):
@@ -99,6 +110,7 @@ class ExtractionRead(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     grounding: ExtractionGrounding | None = None
+    line_items_source: LineItemsSource | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -113,6 +125,8 @@ class ExtractionResponse(BaseModel):
     attempts: int
     # The grounding report and attempt history (feature 0008); null before it ran.
     grounding: ExtractionGrounding | None = None
+    # ``table`` when code copied the line items from the document's table (feature 0009).
+    line_items_source: LineItemsSource | None = None
 
 
 class GroundingStats(BaseModel):

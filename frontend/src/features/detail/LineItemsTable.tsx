@@ -1,9 +1,10 @@
-import { ListChecks } from "lucide-react";
+import { ListChecks, LocateFixed, Sparkles, Table2 } from "lucide-react";
 import type { ReactNode } from "react";
 
-import type { ConfidenceReport, InvoiceData, LineItem } from "../../api/types.ts";
+import type { Box, ConfidenceReport, InvoiceData, LineItem, LineItemsSource } from "../../api/types.ts";
 import { ConfidenceBadge, ShowInTextButton } from "../../components/ConfidenceBadge.tsx";
 import { SEVERITY_STYLE } from "../../components/severity.tsx";
+import { Badge } from "../../components/ui/Badge.tsx";
 import { Card, CardBody, CardHeader } from "../../components/ui/Card.tsx";
 import { cx } from "../../lib/cx.ts";
 import { EMPTY, formatAmount, formatQuantity } from "../../lib/format.ts";
@@ -63,17 +64,38 @@ function Cell({
   );
 }
 
+/** Where line items came from (feature 0009): copied from the table by code, or the model. */
+function SourceBadge({ source }: { source: LineItemsSource }) {
+  return source === "table" ? (
+    <Badge tone="success" icon={<Table2 className="size-3.5" aria-hidden />}>
+      Copied from the table
+    </Badge>
+  ) : (
+    <Badge icon={<Sparkles className="size-3.5" aria-hidden />}>Read by the model</Badge>
+  );
+}
+
+/** Where a line item sits on the page, for "Show on page" (feature 0009). */
+export type RowLocator = (index: number) => { page: number; box: Box } | null;
+export type ShowOnPageHandler = (target: { page: number; box: Box; label: string }) => void;
+
 /** Line items with issue rows tinted and issue cells outlined (PRD D8); totals in the footer. */
 export function LineItemsTable({
   data,
   issues,
   confidence = null,
   onLocate,
+  source = null,
+  locateRow,
+  onShowOnPage,
 }: {
   data: InvoiceData;
   issues: IssueIndex;
   confidence?: ConfidenceReport | null;
   onLocate?: LocateHandler;
+  source?: LineItemsSource | null;
+  locateRow?: RowLocator;
+  onShowOnPage?: ShowOnPageHandler;
 }) {
   const guard = { confidence, onLocate };
   const amount = (value: string | null) => formatAmount(value, data.currency);
@@ -93,6 +115,7 @@ export function LineItemsTable({
               }`
             : "No line items were found on the document."
         }
+        actions={source && data.line_items.length > 0 ? <SourceBadge source={source} /> : undefined}
       />
       {worstTable && (
         <div
@@ -112,7 +135,7 @@ export function LineItemsTable({
             <table className="w-full min-w-[34rem] text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs font-medium tracking-wide text-fg-subtle uppercase">
-                  <th scope="col" className="w-10 px-3 py-2 font-medium">#</th>
+                  <th scope="col" className="w-14 px-3 py-2 font-medium">#</th>
                   <th scope="col" className="px-3 py-2 font-medium">Description</th>
                   <th scope="col" className="px-3 py-2 text-right font-medium">Qty</th>
                   <th scope="col" className="px-3 py-2 text-right font-medium">Unit price</th>
@@ -122,9 +145,25 @@ export function LineItemsTable({
               <tbody className="divide-y divide-border">
                 {data.line_items.map((line, index) => {
                   const worst = worstSeverity(issues.forLine(index));
+                  const where = onShowOnPage && locateRow ? locateRow(index) : null;
                   return (
                     <tr key={index} id={lineRowId(index)} className={cx(worst && SEVERITY_STYLE[worst].tint)}>
-                      <td className="px-3 py-3 align-top text-fg-subtle tabular-nums">{index + 1}</td>
+                      <td className="px-3 py-3 align-top text-fg-subtle tabular-nums">
+                        <span className="inline-flex items-center gap-1">
+                          {index + 1}
+                          {where && onShowOnPage && (
+                            <button
+                              type="button"
+                              onClick={() => onShowOnPage({ ...where, label: `line ${index + 1}` })}
+                              className="inline-grid size-6 shrink-0 place-items-center rounded-md text-fg-subtle hover:bg-surface-2 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+                              title={`Show on page ${where.page}`}
+                              aria-label={`Show line ${index + 1} on page ${where.page}`}
+                            >
+                              <LocateFixed className="size-3.5" aria-hidden />
+                            </button>
+                          )}
+                        </span>
+                      </td>
                       <Cell index={index} column="description" issues={issues} {...guard}>
                         <span className={line.description ? "text-fg" : "text-fg-subtle"}>
                           {line.description ?? EMPTY}

@@ -139,6 +139,23 @@ class GuardrailMetrics(BaseModel):
     transient_retries: int
 
 
+class VisionMetrics(BaseModel):
+    """Tables, layout and vision use in the window (feature 0009 metrics, PRD D12)."""
+
+    # Newest layout analysis per document made in the window.
+    layouts_analysed: int
+    documents_with_line_item_table: int
+    tables_found: int
+    # Line items of extractions in the window, by where they came from.
+    line_items_from_table: int
+    line_items_from_model: int
+    # from_table / (from_table + from_model); ``None`` when there are no line items.
+    line_items_table_share: float | None
+    # Successful vision page calls (one per page) and multimodal extraction calls.
+    pages_via_vision: int
+    multimodal_calls: int
+
+
 class MetricsSummary(BaseModel):
     window_days: int | None
     since: datetime | None
@@ -151,4 +168,5 @@ class MetricsSummary(BaseModel):
     by_model: list[GroupTotals]
     by_purpose: list[GroupTotals]
     guardrails: GuardrailMetrics
+    vision: VisionMetrics
     prices_as_of: date

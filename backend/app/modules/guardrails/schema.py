@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from app.modules.text_extraction.schema import ExtractionMethod
+from app.modules.vision.schema import BlockType, Box, ColumnRole
 
 
 class GroundingStatus(StrEnum):
@@ -40,6 +41,18 @@ class MatchKind(StrEnum):
     FUZZY = "fuzzy"
     SYMBOL = "symbol"
     OCR = "ocr"
+    TABLE = "table"  # copied by code from a table cell (feature 0009)
+
+
+class FieldLocation(BaseModel):
+    """Where a value sits on the page (feature 0009): a table cell or a layout block."""
+
+    page: int
+    box: Box | None = None
+    block: BlockType | None = None
+    table: int | None = None
+    row: int | None = None
+    column: ColumnRole | None = None
 
 
 class FieldGrounding(BaseModel):
@@ -55,6 +68,7 @@ class FieldGrounding(BaseModel):
     start: int | None = None
     end: int | None = None
     note: str | None = None
+    location: FieldLocation | None = None
 
 
 class GroundingReport(BaseModel):
@@ -105,6 +119,7 @@ class FieldConfidence(BaseModel):
     page: int | None = None
     start: int | None = None
     end: int | None = None
+    location: FieldLocation | None = None
     reasons: list[str]
 
 

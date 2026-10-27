@@ -1,3 +1,4 @@
+import base64
 import logging
 import time
 import uuid
@@ -8,18 +9,29 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.errors import AppError, ConflictError, LLMOutputError
 from app.core.llm import LLMClient, Message, Purpose, TokenUsage
 from app.core.logging import bind_document_id, bind_trace
+from app.core.storage import Storage
 from app.modules.documents import service as documents_service
 from app.modules.documents.schema import DocumentStatus
 from app.modules.guardrails import service as guardrails_service
 from app.modules.guardrails.schema import ExtractionGrounding, GroundingAttempt, GroundingReport
 from app.modules.structured_extraction import crud, prompts
 from app.modules.structured_extraction.model import Extraction
-from app.modules.structured_extraction.schema import ExtractionRead, GroundingStats, InvoiceData
+from app.modules.structured_extraction.schema import (
+    ExtractionRead,
+    GroundingStats,
+    InvoiceData,
+    LineItem,
+    LineItemSourceStats,
+    LineItemsSource,
+)
 from app.modules.text_extraction import service as text_extraction_service
-from app.modules.text_extraction.schema import DocumentTextRead
+from app.modules.text_extraction.schema import DocumentTextRead, ExtractionMethod
+from app.modules.vision import service as vision_service
+from app.modules.vision.schema import LayoutAnalysis, Table, TableKind, TableLineItems
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +61,20 @@ class _Outcome:
     model: str
     attempts: int
     usage: TokenUsage
+
+
+@dataclass(frozen=True)
+class _Inputs:
+    """What the model gets besides the text, and the line items code copies (feature 0009)."""
+
+    tables: tuple[str, ...] = ()
+    images: tuple[bytes, ...] = ()
+    table_items: TableLineItems | None = None
+    layout: LayoutAnalysis | None = None
+
+    @property
+    def line_items_source(self) -> LineItemsSource:
+        return "table" if self.table_items is not None else "model"
 
 
 def _to_read(row: Extraction) -> ExtractionRead:
@@ -85,19 +111,101 @@ def _format_errors(errors: Sequence[Mapping[str, Any]]) -> list[str]:
     return lines
 
 
+def _render_table(table: Table) -> str:
+    """A detected table as prompt text: a title line, then one ``cell | cell`` line per row."""
+    kind = "line items" if table.kind is TableKind.LINE_ITEMS else "other"
+    pages = ", ".join(str(page) for page in table.pages)
+    columns = (
+        " | ".join(cell or "" for cell in table.header)
+        if table.header
+        else f"{len(table.columns)} columns without titles"
+    )
+    rows = [" | ".join(cell or "" for cell in row.cells) for row in table.rows]
+    return "\n".join([f"Table {table.index + 1} (page {pages}, {kind}; columns: {columns})", *rows])
+
+
+def _apply_table(data: InvoiceData, inputs: "_Inputs") -> InvoiceData:
+    """Replace the model's line items with the ones code copied from the table (0009 D5)."""
+    if inputs.table_items is None:
+        return data
+    items = [
+        LineItem(
+            description=item.description,
+            quantity=item.quantity,
+            unit_price=item.unit_price,
+            amount=item.amount,
+        )
+        for item in inputs.table_items.items
+    ]
+    return data.model_copy(update={"line_items": items})
+
+
+def _document_message(text: str, inputs: "_Inputs") -> Message:
+    """The document as the user message: text and tables, plus page images for scans (D6)."""
+    prompt = prompts.document_prompt(text, inputs.tables)
+    if not inputs.images:
+        return {"role": "user", "content": prompt}
+    parts: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for jpeg in inputs.images:
+        encoded = base64.b64encode(jpeg).decode("ascii")
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{encoded}", "detail": "high"},
+            }
+        )
+    return {"role": "user", "content": parts}
+
+
+def _inputs(
+    db: Session,
+    storage: Storage | None,
+    document_id: uuid.UUID,
+    text: DocumentTextRead,
+    *,
+    table_items: bool = True,
+) -> "_Inputs":
+    """Tables (any document), table line items (text PDFs) and page images (scans)."""
+    layout = vision_service.find_layout(db, document_id)
+    if layout is not None and layout.source is not text.method:
+        layout = None  # an analysis of an older text of this document
+    images: tuple[bytes, ...] = ()
+    if text.method is ExtractionMethod.VISION and storage is not None:
+        max_pages = get_settings().vision_max_pages
+        images = tuple(vision_service.page_images(db, storage, document_id, max_pages))
+    if layout is None:
+        return _Inputs(images=images)
+    copied = None
+    if table_items and layout.source is ExtractionMethod.PDF_PARSER:
+        copied = vision_service.line_items_from_layout(layout)
+    return _Inputs(
+        tables=tuple(_render_table(table) for table in layout.tables),
+        images=images,
+        table_items=copied,
+        layout=layout,
+    )
+
+
 # -- LLM call -------------------------------------------------------------------------
 
 
-@bind_trace(purpose=Purpose.STRUCTURED_EXTRACTION, prompt_version=prompts.PROMPT_VERSION)
-def _extract_with_retry(llm: LLMClient, text: str) -> _Outcome:
+def _extract_with_retry(llm: LLMClient, text: str, inputs: _Inputs | None = None) -> _Outcome:
     """Ask for ``InvoiceData``; on an invalid reply retry once with the errors fed back.
 
-    API failures (``LLMError``) are not retried here (the SDK already retries them) and a
-    refusal is final: neither is likely to change by asking again.
+    API failures (``LLMError``) are not retried here (the seam already retries them) and a
+    refusal is final: neither is likely to change by asking again. With page images the
+    calls are labelled ``multimodal_extraction`` (0009 D6).
     """
+    inputs = inputs or _Inputs()
+    purpose = Purpose.MULTIMODAL_EXTRACTION if inputs.images else Purpose.STRUCTURED_EXTRACTION
+    with bind_trace(purpose=purpose, prompt_version=prompts.PROMPT_VERSION):
+        return _ask(llm, text, inputs)
+
+
+def _ask(llm: LLMClient, text: str, inputs: _Inputs) -> _Outcome:
     base: list[Message] = [
         {"role": "system", "content": prompts.SYSTEM_PROMPT},
-        {"role": "user", "content": prompts.document_prompt(text)},
+        _document_message(text, inputs),
     ]
     messages = base
     usage = TokenUsage()
@@ -115,7 +223,8 @@ def _extract_with_retry(llm: LLMClient, text: str) -> _Outcome:
                     code="llm_refused",
                 )
             if isinstance(response.parsed, InvoiceData):
-                return _Outcome(response.parsed, response.model, attempt, usage)
+                data = _apply_table(response.parsed, inputs)
+                return _Outcome(data, response.model, attempt, usage)
             errors = ["reply: the reply contained no structured object"]
         logger.warning(
             "structured extraction reply rejected",
@@ -132,12 +241,21 @@ def _extract_with_retry(llm: LLMClient, text: str) -> _Outcome:
 
 
 def extract_structured_data(
-    db: Session, llm: LLMClient, document_id: uuid.UUID, *, force: bool = False
+    db: Session,
+    llm: LLMClient,
+    document_id: uuid.UUID,
+    *,
+    force: bool = False,
+    storage: Storage | None = None,
 ) -> ExtractionRead:
     """Turn the document's saved text into ``InvoiceData`` and save it; the 0005 agent tool.
 
     Idempotent: an existing row is returned without any LLM call unless ``force`` replaces
     it in place. The text must have been extracted first (``text_not_extracted`` otherwise).
+
+    Feature 0009: the newest layout's tables go into the prompt; for a text PDF with a
+    line-item table, code copies the line items from it (``line_items_source = table``); for
+    a scan, the page images are sent too when ``storage`` is given (multimodal).
 
     This commits its own row, so the result survives a later pipeline failure, and it
     commits ``db`` first so no transaction stays open during the LLM call: call it at a
@@ -157,11 +275,12 @@ def extract_structured_data(
                 "No text has been extracted for this document; run text extraction first.",
                 code="text_not_extracted",
             )
+        inputs = _inputs(db, storage, document_id, text)
         db.commit()  # end the read transaction before the LLM call
 
         started = time.perf_counter()
         document = _fit_text(text.raw_text)
-        outcome = _extract_with_retry(llm, document)
+        outcome = _extract_with_retry(llm, document, inputs)
 
         row = crud.upsert(
             db,
@@ -173,6 +292,7 @@ def extract_structured_data(
                 "attempts": outcome.attempts,
                 "prompt_tokens": outcome.usage.prompt_tokens,
                 "completion_tokens": outcome.usage.completion_tokens,
+                "line_items_source": inputs.line_items_source,
             },
             overwrite=force,
         )
@@ -182,6 +302,9 @@ def extract_structured_data(
             extra={
                 "document_type": outcome.data.document_type.value,
                 "line_items": len(outcome.data.line_items),
+                "line_items_source": inputs.line_items_source,
+                "tables": len(inputs.tables),
+                "images": len(inputs.images),
                 "attempts": outcome.attempts,
                 "prompt_tokens": outcome.usage.prompt_tokens,
                 "completion_tokens": outcome.usage.completion_tokens,
@@ -214,9 +337,20 @@ def _history(used: int, report: GroundingReport) -> list[GroundingAttempt]:
     ]
 
 
+def _check(data: InvoiceData, text: DocumentTextRead, inputs: _Inputs) -> GroundingReport:
+    refs = inputs.table_items.refs if inputs.table_items is not None else None
+    return guardrails_service.check_grounding(
+        data, text.raw_text, text.method, layout=inputs.layout, table_refs=refs
+    )
+
+
 @bind_trace(purpose=Purpose.GROUNDING_RETRY, prompt_version=prompts.PROMPT_VERSION)
 def _ground_with_retry(
-    llm: LLMClient, text: DocumentTextRead, data: InvoiceData, used: int
+    llm: LLMClient,
+    text: DocumentTextRead,
+    data: InvoiceData,
+    used: int,
+    inputs: _Inputs | None = None,
 ) -> _Grounded:
     """Check grounding; re-ask with the ungrounded values while the budget lasts (PRD D3).
 
@@ -224,11 +358,12 @@ def _ground_with_retry(
     spent). A schema-invalid or refused reply is discarded. The kept attempt is the one with
     the fewest ungrounded values (ties: the latest); the rest are flagged, never nulled.
     """
-    report = guardrails_service.check_grounding(data, text.raw_text, text.method)
+    inputs = inputs or _Inputs()
+    report = _check(data, text, inputs)
     history = _history(used, report)
     base: list[Message] = [
         {"role": "system", "content": prompts.SYSTEM_PROMPT},
-        {"role": "user", "content": prompts.document_prompt(_fit_text(text.raw_text))},
+        _document_message(_fit_text(text.raw_text), inputs),
     ]
     best, best_report, kept = data, report, used
     current, current_report = data, report
@@ -258,8 +393,8 @@ def _ground_with_retry(
                 GroundingAttempt(attempt=calls, reason="grounding", valid=False, ungrounded=[])
             )
             continue
-        current = response.parsed
-        current_report = guardrails_service.check_grounding(current, text.raw_text, text.method)
+        current = _apply_table(response.parsed, inputs)
+        current_report = _check(current, text, inputs)
         history.append(
             GroundingAttempt(
                 attempt=calls,
@@ -280,7 +415,9 @@ def _ground_with_retry(
     return _Grounded(best, grounding, calls, usage, model)
 
 
-def ground_extraction(db: Session, llm: LLMClient, document_id: uuid.UUID) -> ExtractionRead:
+def ground_extraction(
+    db: Session, llm: LLMClient, document_id: uuid.UUID, *, storage: Storage | None = None
+) -> ExtractionRead:
     """Check the saved extraction against the text and re-extract what is ungrounded (0008).
 
     The agent's ``check_grounding`` tool. Idempotent: a row that already has a grounding
@@ -305,10 +442,14 @@ def ground_extraction(db: Session, llm: LLMClient, document_id: uuid.UUID) -> Ex
                 "No text has been extracted for this document; run text extraction first.",
                 code="text_not_extracted",
             )
+        # The extraction's inputs again; table line items only if it used them (0009).
+        inputs = _inputs(
+            db, storage, document_id, text, table_items=extraction.line_items_source == "table"
+        )
         db.commit()  # end the read transaction before any LLM call
 
         started = time.perf_counter()
-        outcome = _ground_with_retry(llm, text, extraction.data, extraction.attempts)
+        outcome = _ground_with_retry(llm, text, extraction.data, extraction.attempts, inputs)
         values: dict[str, Any] = {
             "grounding": outcome.grounding.model_dump(mode="json"),
             "attempts": outcome.calls,
@@ -348,6 +489,12 @@ def grounding_stats(db: Session, *, since: datetime | None = None) -> GroundingS
         values_grounded=grounded,
         grounding_retry_extractions=retried,
     )
+
+
+def line_item_source_stats(db: Session, *, since: datetime | None = None) -> LineItemSourceStats:
+    """Line items copied from tables vs extracted by the model (feature 0009 metrics)."""
+    row = crud.line_item_totals(db, since=since)
+    return LineItemSourceStats(from_table=int(row.from_table), from_model=int(row.from_model))
 
 
 def get_extraction(db: Session, document_id: uuid.UUID) -> ExtractionRead:

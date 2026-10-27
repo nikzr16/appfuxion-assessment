@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import SessionLocal
 from app.core.errors import NotFoundError
-from app.core.llm import LLMCallRecord
+from app.core.llm import LLMCallRecord, Purpose
 from app.modules.agent import service as agent_service
 from app.modules.agent.schema import AgentRunRead, RunTrigger
 from app.modules.documents import service as documents_service
@@ -36,8 +36,10 @@ from app.modules.observability.schema import (
     ToolSpan,
     TraceRun,
     UsageTotals,
+    VisionMetrics,
 )
 from app.modules.structured_extraction import service as structured_extraction_service
+from app.modules.vision import service as vision_service
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +272,7 @@ def get_metrics(
         by_model=[_group_row(r) for r in crud.group_totals(db, by="model", since=since)],
         by_purpose=[_group_row(r) for r in crud.group_totals(db, by="purpose", since=since)],
         guardrails=_guardrail_metrics(db, since),
+        vision=_vision_metrics(db, since),
         prices_as_of=pricing.PRICES_AS_OF,
     )
 
@@ -296,6 +299,24 @@ def _guardrail_metrics(db: Session, since: datetime | None) -> GuardrailMetrics:
         ),
         grounding_retry_extractions=grounding.grounding_retry_extractions,
         transient_retries=crud.count_retries(db, since=since),
+    )
+
+
+def _vision_metrics(db: Session, since: datetime | None) -> VisionMetrics:
+    layouts = vision_service.layout_stats(db, since=since)
+    sources = structured_extraction_service.line_item_source_stats(db, since=since)
+    items = sources.from_table + sources.from_model
+    return VisionMetrics(
+        layouts_analysed=layouts.layouts_analysed,
+        documents_with_line_item_table=layouts.documents_with_line_item_table,
+        tables_found=layouts.tables_found,
+        line_items_from_table=sources.from_table,
+        line_items_from_model=sources.from_model,
+        line_items_table_share=round(sources.from_table / items, 3) if items else None,
+        pages_via_vision=crud.count_calls(
+            db, purpose=Purpose.VISION_TRANSCRIPTION, since=since, ok_only=True
+        ),
+        multimodal_calls=crud.count_calls(db, purpose=Purpose.MULTIMODAL_EXTRACTION, since=since),
     )
 
 

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import LLMError, NotFoundError
 from app.core.llm import FakeLLM, LLMCallRecord, TokenUsage
-from app.core.logging import JsonFormatter, TraceLabels
+from app.core.logging import JsonFormatter, TraceLabels, bind_trace
 from app.modules.agent import prompts as agent_prompts
 from app.modules.agent.model import AgentRun
 from app.modules.agent.schema import RunTrigger
@@ -24,8 +24,8 @@ from app.modules.observability import crud, service
 from app.modules.observability.model import LlmCall
 from app.modules.observability.schema import LLMSpan, ToolSpan
 from app.modules.structured_extraction import prompts as extraction_prompts
-from app.modules.text_extraction import prompts as text_prompts
-from app.modules.text_extraction.schema import PageTranscription
+from app.modules.vision import prompts as vision_prompts
+from app.modules.vision.schema import PageAnalysis
 from tests.modules.agent.conftest import (
     MakeDocument,
     happy_script,
@@ -83,11 +83,12 @@ def test_a_run_writes_one_row_per_llm_call_with_labels_and_step_links(
     assert [(r.purpose, r.step_index) for r in rows] == [
         ("agent_loop", None),
         ("agent_loop", None),
-        ("structured_extraction", 1),
+        ("agent_loop", None),
+        ("structured_extraction", 2),
         ("agent_loop", None),
         ("agent_loop", None),
         ("agent_loop", None),
-        ("summary", 4),
+        ("summary", 5),
     ]
     assert {r.run_id for r in rows} == {run_id}
     assert {r.agent for r in rows} == {"document"}
@@ -109,13 +110,13 @@ def test_vision_calls_are_recorded_inside_the_extract_text_step(
 ) -> None:
     document_id = make_document(samples.png_invoice(), "image/png")
     script = happy_script()
-    script.insert(1, PageTranscription(text=PAGE_TEXT, legible=True))
+    script.insert(1, PageAnalysis(tables=[], blocks=[], text=PAGE_TEXT, legible=True))
     run_agent(document_id, FakeLLM(script))
 
     vision = [r for r in _calls(db_session, document_id) if r.purpose == "vision_transcription"]
     assert len(vision) == 1
     assert vision[0].step_index == 0
-    assert vision[0].prompt_version == text_prompts.PROMPT_VERSION
+    assert vision[0].prompt_version == vision_prompts.PROMPT_VERSION
 
 
 @pytest.mark.usefixtures("llm_recorder")
@@ -211,9 +212,9 @@ def test_log_lines_during_a_run_carry_the_document_and_run_ids(
     assert {line["run_id"] for line in run_lines} == {run_id}
     assert all(line["document_id"] == str(document_id) for line in run_lines)
     calls = [line for line in lines if line["message"] == "llm.call"]
-    assert len(calls) == 7
+    assert len(calls) == 8
     assert all(line["run_id"] == run_id and line["agent"] == "document" for line in calls)
-    assert [line["purpose"] for line in calls].count("agent_loop") == 5
+    assert [line["purpose"] for line in calls].count("agent_loop") == 6
     assert {line["level"] for line in calls} == {"INFO"}
     finished = next(line for line in lines if line["message"] == "agent run finished")
     assert finished["run_id"] == run_id
@@ -242,6 +243,8 @@ def test_trace_of_the_latest_run_has_timing_totals_and_ordered_spans(
         ("llm", "agent_loop"),
         ("tool", "extract_text"),
         ("llm", "agent_loop"),
+        ("tool", "extract_tables"),
+        ("llm", "agent_loop"),
         ("tool", "extract_structured_data"),
         ("llm", "structured_extraction"),
         ("llm", "agent_loop"),
@@ -254,17 +257,17 @@ def test_trace_of_the_latest_run_has_timing_totals_and_ordered_spans(
     ]
     assert all(s.offset_ms >= 0 and s.duration_ms >= 0 for s in trace.spans)
     llm_spans = [s for s in trace.spans if isinstance(s, LLMSpan)]
-    assert [s.step_index for s in llm_spans if s.purpose != "agent_loop"] == [1, 4]
-    assert trace.totals.llm_calls == 7
-    assert (trace.totals.prompt_tokens, trace.totals.completion_tokens) == (70, 35)
-    assert trace.totals.total_tokens == 105
+    assert [s.step_index for s in llm_spans if s.purpose != "agent_loop"] == [2, 5]
+    assert trace.totals.llm_calls == 8
+    assert (trace.totals.prompt_tokens, trace.totals.completion_tokens) == (80, 40)
+    assert trace.totals.total_tokens == 120
     assert trace.totals.cost_usd is None and trace.totals.cost_complete is False
     assert [(g.key, g.llm_calls) for g in trace.by_purpose] == [
-        ("agent_loop", 5),
+        ("agent_loop", 6),
         ("structured_extraction", 1),
         ("summary", 1),
     ]
-    assert [(g.key, g.total_tokens) for g in trace.by_agent] == [("document", 105)]
+    assert [(g.key, g.total_tokens) for g in trace.by_agent] == [("document", 120)]
 
 
 @pytest.mark.usefixtures("llm_recorder")
@@ -302,10 +305,10 @@ def test_trace_of_a_run_without_ledger_rows_says_so(
     trace = service.get_trace(db_session, document_id)
 
     assert trace.llm_calls_recorded is False
-    assert [s.kind for s in trace.spans] == ["tool"] * 5
+    assert [s.kind for s in trace.spans] == ["tool"] * 6
     assert trace.totals.llm_calls == 0 and trace.totals.cost_usd == Decimal(0)
     assert trace.run is not None
-    assert (trace.run.run_prompt_tokens, trace.run.run_completion_tokens) == (60, 30)
+    assert (trace.run.run_prompt_tokens, trace.run.run_completion_tokens) == (70, 35)
 
 
 def test_trace_of_a_document_without_a_run_and_of_an_unknown_document(
@@ -464,6 +467,37 @@ def test_metrics_with_no_data_at_all(db_session: Session) -> None:
     assert summary.guardrails.needs_review_rate is None
     assert summary.guardrails.grounding_rate is None
     assert summary.guardrails.transient_retries == 0
+    assert summary.vision.layouts_analysed == 0
+    assert summary.vision.line_items_table_share is None
+    assert summary.vision.pages_via_vision == summary.vision.multimodal_calls == 0
+
+
+# -- Vision metrics (feature 0009) --------------------------------------------------------
+
+
+@pytest.mark.usefixtures("llm_recorder")
+def test_metrics_vision_block_counts_tables_line_item_sources_and_vision_calls(
+    db_session: Session, make_document: MakeDocument, run_agent: RunAgent
+) -> None:
+    from tests.modules.vision import samples as vision_samples
+
+    # A text PDF with a line-item table (3 items copied by code) ...
+    run_agent(make_document(vision_samples.invoice_pdf()), FakeLLM(happy_script()))
+    # ... and one without a table (the model's 2 items).
+    run_agent(make_document(), FakeLLM(happy_script()))
+    # Vision ledger rows: two pages and one multimodal call.
+    for purpose in ("vision_transcription", "vision_transcription", "multimodal_extraction"):
+        with bind_trace(purpose=purpose):
+            FakeLLM(["{}"]).complete([{"role": "user", "content": "x"}])
+
+    vision = service.get_metrics(db_session).vision
+
+    assert vision.layouts_analysed == 2
+    assert vision.documents_with_line_item_table == 1
+    assert vision.tables_found == 1
+    assert (vision.line_items_from_table, vision.line_items_from_model) == (3, 2)
+    assert vision.line_items_table_share == 0.6
+    assert (vision.pages_via_vision, vision.multimodal_calls) == (2, 1)
 
 
 # -- Guardrails metrics (feature 0008) ----------------------------------------------------

@@ -11,6 +11,7 @@ import type {
   DocumentTrace,
   DocumentUploadResponse,
   ExtractionResponse,
+  LayoutResponse,
   MetricsSummary,
 } from "./types.ts";
 
@@ -162,6 +163,16 @@ export function getExtraction(id: string): Promise<ExtractionResponse | null> {
 /** Saved raw text, or `null` when none exists (409 `text_*`). */
 export function getText(id: string): Promise<DocumentTextResponse | null> {
   return nullOnConflict(request<DocumentTextResponse>(`/documents/${encodeURIComponent(id)}/text`));
+}
+
+/** Newest tables-and-layout analysis, or `null` when none exists (409 `layout_*`, 0009). */
+export function getLayout(id: string): Promise<LayoutResponse | null> {
+  return nullOnConflict(request<LayoutResponse>(`/documents/${encodeURIComponent(id)}/layout`));
+}
+
+/** URL of a page preview JPEG (`GET /api/documents/{id}/pages/{n}/image`, 0009). */
+export function pageImageUrl(id: string, page: number): string {
+  return `${API_BASE}/documents/${encodeURIComponent(id)}/pages/${page}/image`;
 }
 
 /** `GET /api/documents/{id}/runs`, newest first, each with its tool-call steps. */

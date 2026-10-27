@@ -149,3 +149,38 @@ describe("MetricsPage — guardrails (feature 0008)", () => {
     expect(within(section).getByText(/No document in this window has been checked yet/)).toBeInTheDocument();
   });
 });
+
+describe("MetricsPage — vision (feature 0009)", () => {
+  const vision = {
+    layouts_analysed: 4,
+    documents_with_line_item_table: 3,
+    tables_found: 5,
+    line_items_from_table: 18,
+    line_items_from_model: 6,
+    line_items_table_share: 0.75,
+    pages_via_vision: 7,
+    multimodal_calls: 2,
+  };
+
+  it("shows tables found, line-item sources and vision use", async () => {
+    mockApi({ ...HEALTH, "GET /metrics/summary": ok(makeMetrics({ vision })) });
+    renderApp("/metrics");
+
+    const section = await screen.findByRole("region", { name: "Vision" });
+    expect(within(section).getByText("3 of 4")).toBeInTheDocument();
+    expect(within(section).getByText("5 tables found")).toBeInTheDocument();
+    expect(within(section).getByText("75%")).toBeInTheDocument();
+    expect(within(section).getByText("18 of 24 copied by code")).toBeInTheDocument();
+    expect(within(section).getByText("7")).toBeInTheDocument();
+    expect(within(section).getByText("2")).toBeInTheDocument();
+  });
+
+  it("explains when nothing has been analysed yet", async () => {
+    const empty = { ...vision, layouts_analysed: 0, line_items_from_table: 0, line_items_from_model: 0, pages_via_vision: 0 };
+    mockApi({ ...HEALTH, "GET /metrics/summary": ok(makeMetrics({ vision: empty })) });
+    renderApp("/metrics");
+
+    const section = await screen.findByRole("region", { name: "Vision" });
+    expect(within(section).getByText(/No document in this window has been analysed for tables yet/)).toBeInTheDocument();
+  });
+});

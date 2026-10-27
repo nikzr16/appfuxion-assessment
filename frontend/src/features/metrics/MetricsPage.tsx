@@ -22,6 +22,7 @@ import {
 import { purposeLabel } from "../../lib/trace.ts";
 import { useDocumentTitle } from "../../lib/useDocumentTitle.ts";
 import { GuardrailsSection } from "./GuardrailsSection.tsx";
+import { VisionSection } from "./VisionSection.tsx";
 
 type Window = "7" | "30" | "all";
 
@@ -241,6 +242,7 @@ export default function MetricsPage() {
         <div className="space-y-6" aria-busy={metrics.isFetching}>
           <Tiles data={data} />
           {data.guardrails && <GuardrailsSection data={data.guardrails} />}
+          {data.vision && <VisionSection data={data.vision} />}
           <div className="space-y-6">
             <UsageTable
               id="metrics-by-model"

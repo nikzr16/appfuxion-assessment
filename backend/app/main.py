@@ -23,11 +23,13 @@ from app.modules.observability import service as observability_service
 from app.modules.observability.router import router as observability_router
 from app.modules.structured_extraction.router import router as structured_extraction_router
 from app.modules.text_extraction.router import router as text_extraction_router
+from app.modules.vision.router import router as vision_router
 
 ROUTERS: list[APIRouter] = [
     health_router,
     documents_router,
     text_extraction_router,
+    vision_router,
     structured_extraction_router,
     agent_router,
     observability_router,

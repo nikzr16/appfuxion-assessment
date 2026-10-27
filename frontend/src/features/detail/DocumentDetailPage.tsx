@@ -6,6 +6,7 @@ import {
   POLL_INTERVAL_MS,
   useDocument,
   useExtraction,
+  useLayout,
   useRefreshOnFinish,
   useResult,
   useRuns,
@@ -26,12 +27,14 @@ import { isNetworkError, isNotFound } from "../../lib/errors.ts";
 import type { TextHighlight } from "../../lib/confidence.ts";
 import { fileKind, formatBytes, formatRelative, formatTimestamp } from "../../lib/format.ts";
 import { EMPTY_ISSUE_INDEX, indexIssues } from "../../lib/issues.ts";
+import { lineItemLocation, type PageHighlight } from "../../lib/layout.ts";
 import { useDocumentTitle } from "../../lib/useDocumentTitle.ts";
 import { AgentActivity } from "./AgentActivity.tsx";
 import { NeedsReviewBanner } from "./ConfidenceSummary.tsx";
 import { ConversionCard } from "./ConversionCard.tsx";
 import { IssuesList } from "./IssuesList.tsx";
-import { LineItemsTable } from "./LineItemsTable.tsx";
+import { LayoutSection } from "./LayoutSection.tsx";
+import { LineItemsTable, type ShowOnPageHandler } from "./LineItemsTable.tsx";
 import { RawTextSection } from "./RawTextSection.tsx";
 import { ReprocessButton } from "./ReprocessButton.tsx";
 import { StructuredData, type LocateHandler } from "./StructuredData.tsx";
@@ -159,8 +162,18 @@ function confidenceNote(result: AgentResult): string | undefined {
   return "Confidence not available for this result — reprocess the document to compute it.";
 }
 
-function CompletedView({ documentId, onLocate }: { documentId: string; onLocate: LocateHandler }) {
+function CompletedView({
+  documentId,
+  onLocate,
+  onShowOnPage,
+}: {
+  documentId: string;
+  onLocate: LocateHandler;
+  onShowOnPage: ShowOnPageHandler;
+}) {
   const result = useResult(documentId, { enabled: true });
+  const extraction = useExtraction(documentId, { enabled: true });
+  const layout = useLayout(documentId, { enabled: true });
   const issues = useMemo(
     () => (result.data ? indexIssues(result.data.validation.issues) : EMPTY_ISSUE_INDEX),
     [result.data],
@@ -191,7 +204,15 @@ function CompletedView({ documentId, onLocate }: { documentId: string; onLocate:
             confidenceNote={confidenceNote(result.data)}
             onLocate={onLocate}
           />
-          <LineItemsTable data={data} issues={issues} confidence={confidence} onLocate={onLocate} />
+          <LineItemsTable
+            data={data}
+            issues={issues}
+            confidence={confidence}
+            onLocate={onLocate}
+            source={extraction.data?.line_items_source ?? null}
+            locateRow={(index) => lineItemLocation(confidence, layout.data, index)}
+            onShowOnPage={onShowOnPage}
+          />
         </div>
         <div className="min-w-0 space-y-6 lg:sticky lg:top-24">
           <IssuesList report={result.data.validation} currency={data.currency} />
@@ -246,6 +267,8 @@ export default function DocumentDetailPage() {
   const [alreadyProcessing, setAlreadyProcessing] = useState(false);
   const [highlight, setHighlight] = useState<TextHighlight | null>(null);
   const locate: LocateHandler = (span) => setHighlight({ ...span, nonce: Date.now() });
+  const [pageHighlight, setPageHighlight] = useState<PageHighlight | null>(null);
+  const showOnPage: ShowOnPageHandler = (target) => setPageHighlight({ ...target, nonce: Date.now() });
   useRefreshOnFinish(id, status);
   useDocumentTitle(document.data?.filename ?? (document.isError ? "Document not found" : "Document"));
 
@@ -306,10 +329,13 @@ export default function DocumentDetailPage() {
       )}
 
       {doc.status === "processing" && <ProcessingBanner />}
-      {doc.status === "completed" && <CompletedView documentId={doc.document_id} onLocate={locate} />}
+      {doc.status === "completed" && (
+        <CompletedView documentId={doc.document_id} onLocate={locate} onShowOnPage={showOnPage} />
+      )}
       {doc.status === "failed" && <FailedView document={doc} />}
 
       <div className="mt-6 space-y-6">
+        {doc.status !== "processing" && <LayoutSection documentId={doc.document_id} highlight={pageHighlight} />}
         <AgentActivity
           runs={runs.data}
           isPending={runs.isPending}

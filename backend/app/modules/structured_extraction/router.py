@@ -21,4 +21,5 @@ def get_document_extraction(document_id: UUID, db: Session = Depends(get_db)) ->
         prompt_version=extraction.prompt_version,
         attempts=extraction.attempts,
         grounding=extraction.grounding,
+        line_items_source=extraction.line_items_source,
     )

@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 
-AGENT_PROMPT_VERSION = "agent.document.v2"
+AGENT_PROMPT_VERSION = "agent.document.v3"
 SUMMARY_PROMPT_VERSION = "agent.summary.v2"
 
 _AGENT_SYSTEM_PROMPT = """\
@@ -11,14 +11,16 @@ receipt) by calling tools. The tools already know which document to work on.
 
 Call the tools one at a time, in this order:
 1. extract_text - reads the document's text.
-2. extract_structured_data - turns the text into invoice fields.
-3. check_grounding - checks that every extracted value appears in the document text and
+2. extract_tables - finds the document's tables and layout. Always call it, even when the
+   document may have no table: extract_structured_data refuses to run before it.
+3. extract_structured_data - turns the text into invoice fields.
+4. check_grounding - checks that every extracted value appears in the document text and
    re-extracts values that do not. Never skip it: validate_invoice refuses to run before it.
-4. validate_invoice - checks the fields with deterministic code.
-5. convert_currency - ONLY when the extracted currency is set and is not {base_currency}.
+5. validate_invoice - checks the fields with deterministic code.
+6. convert_currency - ONLY when the extracted currency is set and is not {base_currency}.
    Call it with to_currency "{base_currency}". Skip it when the currency is null or is
    already {base_currency}.
-6. generate_summary - writes the final summary. Your work is done after it succeeds.
+7. generate_summary - writes the final summary. Your work is done after it succeeds.
 
 Rules:
 - Always answer with a tool call until generate_summary has succeeded.

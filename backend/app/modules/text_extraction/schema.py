@@ -2,19 +2,12 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 
 class ExtractionMethod(StrEnum):
     PDF_PARSER = "pdf_parser"
     VISION = "vision"
-
-
-class PageTranscription(BaseModel):
-    """Structured output of one vision call. Every field is required (strict output)."""
-
-    text: str = Field(description="The page's text, copied exactly as printed.")
-    legible: bool = Field(description="False only when no text on the page can be read.")
 
 
 class DocumentTextRead(BaseModel):
