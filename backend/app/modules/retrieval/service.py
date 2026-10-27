@@ -124,9 +124,30 @@ def _match_rule(rows: Sequence[InvoiceEmbedding], tax_key: str | None) -> MatchR
 
 
 def _vendor_filters(
-    name_key: str | None, tax_key: str | None, base: Filters | None = None
+    db: Session,
+    name_key: str | None,
+    tax_key: str | None,
+    base: Filters | None = None,
+    *,
+    compare_names: bool = True,
 ) -> Filters:
-    return replace(base or Filters(), vendor=True, vendor_name_key=name_key, vendor_tax_key=tax_key)
+    """Vendor filters for the D4 rule. With ``compare_names`` (a document's own vendor) a tax-ID
+    match also needs a similar name (decision 0012); typed search text is one value that is
+    either a name or a tax ID, so it is not compared."""
+    tax_names = None
+    if compare_names and name_key and tax_key:
+        tax_names = tuple(
+            name
+            for name in crud.vendor_names_for_tax(db, tax_key)
+            if rules.similar_vendor_names(name_key, name)
+        )
+    return replace(
+        base or Filters(),
+        vendor=True,
+        vendor_name_key=name_key,
+        vendor_tax_key=tax_key,
+        vendor_tax_names=tax_names,
+    )
 
 
 # -- Vendor-history checks (D5) ---------------------------------------------------------------
@@ -146,6 +167,7 @@ def check_vendor_history(
     rows = crud.find(
         db,
         _vendor_filters(
+            db,
             key.name_key,
             key.tax_key,
             Filters(uploaded_before=uploaded_at, exclude_document_id=document_id),
@@ -408,7 +430,9 @@ def vendor_history(
         else:
             rows = crud.find(
                 db,
-                _vendor_filters(name_key, tax_key, Filters(date_from=date_from, date_to=date_to)),
+                _vendor_filters(
+                    db, name_key, tax_key, Filters(date_from=date_from, date_to=date_to)
+                ),
             )
             if target not in rows:
                 rows = [target, *rows]
@@ -417,7 +441,14 @@ def vendor_history(
             raise ValueError("vendor_history needs a document_id, an invoice_number or a vendor")
         name_key, tax_key = _vendor_keys_from_text(vendor)
         rows = crud.find(
-            db, _vendor_filters(name_key, tax_key, Filters(date_from=date_from, date_to=date_to))
+            db,
+            _vendor_filters(
+                db,
+                name_key,
+                tax_key,
+                Filters(date_from=date_from, date_to=date_to),
+                compare_names=False,
+            ),
         )
         if not rows:
             raise VendorNotFoundError(
@@ -539,7 +570,7 @@ def search(db: Session, llm: LLMClient, filters: SearchFilters) -> SearchResult:
     )
     if filters.vendor and filters.vendor.strip():
         name_key, tax_key = _vendor_keys_from_text(filters.vendor)
-        sql = _vendor_filters(name_key, tax_key, sql)
+        sql = _vendor_filters(db, name_key, tax_key, sql, compare_names=False)
         if crud.count(db, sql) == 0:
             return SearchResult(
                 items=[],

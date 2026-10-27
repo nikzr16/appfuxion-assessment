@@ -37,6 +37,22 @@ def test_tax_ids_normalise(raw: str, expected: str | None) -> None:
 
 
 @pytest.mark.parametrize(
+    ("a", "b", "expected"),
+    [
+        ("acme trading", "acme trading", True),
+        ("acme trading", "acme trdaing", True),  # an extraction typo
+        ("acme", "acme trading", True),  # one name contains the other
+        ("abc supplies", "abc supplies m", True),
+        ("acme trading", "acme office supplies", False),
+        ("acme trading", "brightlane logistics", False),
+        ("acme trading", None, True),  # a missing name never vetoes
+    ],
+)
+def test_similar_vendor_names(a: str, b: str | None, expected: bool) -> None:
+    assert rules.similar_vendor_names(a, b) is expected
+
+
+@pytest.mark.parametrize(
     ("raw", "expected"),
     [("INV-1042", "INV1042"), ("inv 1042", "INV1042"), ("#INV1042", "INV1042"), ("0042", "0042")],
 )
