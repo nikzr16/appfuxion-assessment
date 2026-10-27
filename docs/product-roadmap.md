@@ -76,7 +76,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | `docs/prd/0007-observability-prd.md` | `modules/observability` | shipped | B1 — token ledger, traces, metrics; CI run #24 green (2026-10-27) |
 | `docs/prd/0008-guardrails-prd.md` | `modules/guardrails` | shipped | B2 — grounding check, confidence scoring, retries; CI run #28 green (2026-10-27) |
 | `docs/prd/0009-vision-prd.md` | `modules/vision` | shipped | B5 — tables, layout, multimodal; CI run #32 green (2026-10-27) |
-| `docs/prd/0010-retrieval-prd.md` | `modules/retrieval` + Query Agent | in progress | B3 — pgvector index, vendor-history checks, Query Agent (`POST /query`) |
+| `docs/prd/0010-retrieval-prd.md` | `modules/retrieval` + Query Agent | shipped | B3 — pgvector index, vendor-history checks, Ask AI chat (Query Agent, `POST /query`); CI run #36 green (2026-10-27) |
 | *planned* 0011 | `modules/agent` (multi-agent) | planned | B4 — last, reuses every tool |
 
 ### Phase 4: Submission
@@ -113,7 +113,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | `docs/prd/0007-observability-prd.md` | 3 | observability | shipped |
 | `docs/prd/0008-guardrails-prd.md` | 3 | guardrails | shipped |
 | `docs/prd/0009-vision-prd.md` | 3 | vision | shipped |
-| `docs/prd/0010-retrieval-prd.md` | 3 | retrieval | in progress |
+| `docs/prd/0010-retrieval-prd.md` | 3 | retrieval | shipped |
 
 ## Prioritization Log
 
