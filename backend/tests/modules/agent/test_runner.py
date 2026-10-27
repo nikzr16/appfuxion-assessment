@@ -87,6 +87,19 @@ def test_runs_tools_until_done_and_records_every_step() -> None:
     assert (second.index, second.turn, second.tool) == (1, 2, "finish")
 
 
+def test_tool_choice_is_sent_only_when_the_runner_sets_it() -> None:
+    fake = FakeLLM([tool_turn("finish")])
+    _run(fake, Recorder())
+    assert fake.calls[0].tool_choice is None
+
+    recorder = Recorder()
+    fake = FakeLLM([tool_turn("finish")])
+    AgentRunner(fake, recorder.tools(), max_steps=2, tool_choice="required").run(
+        [{"role": "user", "content": "go"}], done=lambda: recorder.finished
+    )
+    assert fake.calls[0].tool_choice == "required"
+
+
 def test_every_call_sends_the_tools_at_temperature_zero_and_the_tool_results_back() -> None:
     recorder = Recorder()
     first_turn = tool_turn(("echo", {"text": "hi"}))

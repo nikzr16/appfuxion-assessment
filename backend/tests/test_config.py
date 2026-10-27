@@ -27,6 +27,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "AGENT_MODE",
         "BASE_CURRENCY",
         "AGENT_MAX_STEPS",
+        "QUERY_MAX_STEPS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -99,7 +100,8 @@ def test_agent_settings_defaults() -> None:
     settings = make_settings()
     assert settings.agent_mode == "multi"  # runs the single agent until B4 (PRD 0005 D13)
     assert settings.base_currency == "MYR"
-    assert settings.agent_max_steps == 12
+    assert settings.agent_max_steps == 14
+    assert settings.query_max_steps == 6
 
 
 def test_base_currency_is_normalised_and_read_from_the_environment(
@@ -119,3 +121,9 @@ def test_base_currency_must_be_a_three_letter_code(value: str) -> None:
 def test_agent_max_steps_is_bounded(value: int) -> None:
     with pytest.raises(ValidationError):
         make_settings(agent_max_steps=value)
+
+
+@pytest.mark.parametrize("value", [0, 21])
+def test_query_max_steps_is_bounded(value: int) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(query_max_steps=value)

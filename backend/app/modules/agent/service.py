@@ -14,7 +14,7 @@ from app.core.errors import ConflictError
 from app.core.llm import Agent, LLMClient, TokenUsage
 from app.core.logging import bind_document_id, bind_trace
 from app.core.storage import Storage
-from app.modules.agent import crud, prompts
+from app.modules.agent import crud, prompts, query
 from app.modules.agent.model import AgentRun
 from app.modules.agent.runner import AgentRunError, AgentRunner, RunOutcome
 from app.modules.agent.schema import (
@@ -22,6 +22,12 @@ from app.modules.agent.schema import (
     AgentResult,
     AgentRunRead,
     ConfidenceStats,
+    ConversationRead,
+    IssueCounts,
+    QueryRequest,
+    QueryResponse,
+    QueryStats,
+    QuerySuggestions,
     RunStats,
     RunStatus,
     RunTrigger,
@@ -32,6 +38,9 @@ from app.modules.documents import service as documents_service
 from app.modules.documents.schema import DocumentStatus, DocumentUploadResponse
 from app.modules.guardrails.schema import ConfidenceLabel
 from app.modules.guardrails.service import HIGH_THRESHOLD, MEDIUM_THRESHOLD
+from app.modules.retrieval import service as retrieval_service
+from app.modules.retrieval.schema import IndexRequest
+from app.modules.validation.schema import IssueCode
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +190,28 @@ def _complete(db: Session, run: AgentRun, ctx: DocumentToolContext, outcome: Run
         },
     )
     documents_service.mark_completed(db, run.document_id)
+    _index(db, run, ctx)
     db.commit()
+
+
+def _index(db: Session, run: AgentRun, ctx: DocumentToolContext) -> None:
+    """Index the completed document for retrieval (PRD 0010 D3) inside a savepoint, so a
+    failure here never stops the document from completing (the back-fill repairs it)."""
+    assert ctx.structured is not None
+    try:
+        with db.begin_nested():
+            retrieval_service.index_document(
+                db,
+                IndexRequest(
+                    document_id=run.document_id,
+                    run_id=run.id,
+                    data=ctx.structured,
+                    needs_review=ctx.confidence.needs_review if ctx.confidence else None,
+                    embedding=ctx.embedding,
+                ),
+            )
+    except Exception:
+        logger.exception("indexing the document failed")
 
 
 def start_reprocess(db: Session, document_id: uuid.UUID) -> DocumentUploadResponse:
@@ -283,4 +313,55 @@ def _log_finished(
             "completion_tokens": usage.completion_tokens,
             "duration_ms": round((time.perf_counter() - started) * 1000),
         },
+    )
+
+
+# -- Query Agent (feature 0010) -------------------------------------------------------------
+
+
+def ask(
+    db: Session, llm: LLMClient, request: QueryRequest, *, today: date | None = None
+) -> QueryResponse:
+    """One question in a chat, answered by the Query Agent (PRD 0010 D8)."""
+    return query.ask(db, llm, request, today=today)
+
+
+def get_conversation(db: Session, conversation_id: uuid.UUID) -> ConversationRead:
+    return query.get_conversation(db, conversation_id)
+
+
+def query_suggestions(db: Session, document_id: uuid.UUID | None = None) -> QuerySuggestions:
+    return query.suggestions(db, document_id)
+
+
+def query_stats(db: Session, *, since: datetime | None = None) -> QueryStats:
+    """Questions asked since ``since`` (feature 0010 metrics)."""
+    conversations, questions, failed, unanswerable, unverified, avg = crud.query_totals(
+        db, since=since
+    )
+    return QueryStats(
+        conversations=conversations,
+        questions=questions,
+        questions_failed=failed,
+        questions_unanswerable=unanswerable,
+        questions_unverified=unverified,
+        avg_question_ms=_round_ms(avg),
+    )
+
+
+def vendor_issue_counts(db: Session, *, since: datetime | None = None) -> IssueCounts:
+    """Completed runs flagged by the vendor-history checks (feature 0010 metrics)."""
+    counts = crud.issue_code_counts(
+        db,
+        [
+            IssueCode.DUPLICATE_INVOICE_NUMBER.value,
+            IssueCode.AMOUNT_OUTLIER.value,
+            IssueCode.NEW_VENDOR.value,
+        ],
+        since=since,
+    )
+    return IssueCounts(
+        duplicate_flags=counts[IssueCode.DUPLICATE_INVOICE_NUMBER.value],
+        outlier_flags=counts[IssueCode.AMOUNT_OUTLIER.value],
+        new_vendor_flags=counts[IssueCode.NEW_VENDOR.value],
     )

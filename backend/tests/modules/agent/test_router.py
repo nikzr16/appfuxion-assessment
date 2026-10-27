@@ -81,6 +81,8 @@ def test_runs_lists_the_tool_calls(client: TestClient, processed: str) -> None:
         "extract_structured_data",
         "check_grounding",
         "validate_invoice",
+        "check_vendor_history",
+        "search_similar_invoices",
         "generate_summary",
     ]
 

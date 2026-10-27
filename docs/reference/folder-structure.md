@@ -29,17 +29,18 @@ PostgreSQL + pgvector in Docker, and CI. Each backend feature adds a folder unde
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                 # create_app(), ROUTERS list, /api prefix, registers the agent pipeline and the LLM ledger recorder
-│   │   ├── models.py               # model registry imported by Alembic (agent, documents, observability, text_extraction, structured_extraction, vision)
+│   │   ├── models.py               # model registry imported by Alembic (agent, documents, observability, retrieval, text_extraction, structured_extraction, vision)
 │   │   ├── core/
 │   │   │   ├── config.py           # pydantic-settings Settings, get_settings()
 │   │   │   ├── db.py               # engine, SessionLocal, Base, get_db
 │   │   │   ├── llm.py              # LLMClient, OpenAILLMClient, FakeLLM, TokenUsage, LLMResponse (parsed, refusal);
 │   │   │   │                       # Purpose / Agent labels, LLMCallRecord, register_llm_recorder, one `llm.call` log per call;
+│   │   │   │                       # optional tool_choice ("required" for the Query Agent, 0010); FakeLLM embedder / embed_error hooks;
 │   │   │   │                       # transient-error retries (_classify, _with_retries, backoff + jitter; SDK retries off)
 │   │   │   ├── storage.py          # Storage protocol, LocalStorage (save, save_as), get_storage
 │   │   │   ├── errors.py           # AppError hierarchy (incl. ConflictError 409, LLMError retryable / retry_after, LLMOutputError) + handlers
 │   │   │   └── logging.py          # JSON formatter; trace context vars (document_id, run_id, agent, purpose,
-│   │   │                           # prompt_version, step_index), bind_document_id, bind_trace, trace_labels
+│   │   │                           # prompt_version, step_index, query_run_id), bind_document_id, bind_trace, trace_labels
 │   │   └── modules/
 │   │       ├── health/             # router.py, service.py, schema.py
 │   │       ├── documents/          # model, crud, schema, service, router, pipeline (hook + register_pipeline_runner)
@@ -51,7 +52,12 @@ PostgreSQL + pgvector in Docker, and CI. Each backend feature adds a folder unde
 │   │       ├── validation/         # pure: schema (report, issue codes), service (validate_invoice, convert_currency, expected_fields), currencies (data)
 │   │       ├── guardrails/         # pure (0008): schema (grounding + confidence DTOs), service (check_grounding,
 │   │       │                       # score_confidence), matching (normalisation, number / date / identifier / text / currency matchers)
-│   │       ├── agent/              # model, crud, schema, service, router, prompts, runner (AgentRunner), tools (7 document tools)
+│   │       ├── agent/              # model (agent_runs; 0010: query_conversations, query_runs), crud, schema, service, router
+│   │       │                       # (+ query_router: /query, /conversations, /query/suggestions), prompts, runner (AgentRunner),
+│   │       │                       # tools (9 document tools), query (0010: Query Agent, its tools and checks)
+│   │       ├── retrieval/          # 0010: model (invoice_embeddings, pgvector), crud, schema, service (index, embeddings, vendor
+│   │       │                       # history + checks, hybrid search, similar, back-fill), router (/similar, /vendor-history),
+│   │       │                       # rules (pure: normalisation, invoice card, statistics, number tokens), backfill (CLI entry point)
 │   │       ├── observability/      # model (llm_calls), crud, schema, service (recorder, trace, metrics), router, pricing
 │   │       └── client_config/      # router, service, schema: GET /api/config (no DB)
 │   ├── migrations/
@@ -60,7 +66,9 @@ PostgreSQL + pgvector in Docker, and CI. Each backend feature adds a folder unde
 │   │   └── versions/               # 0001_enable_pgvector.py, 0002_create_documents.py, 0003_create_document_texts.py,
 │   │                               # 0004_create_extractions.py, 0005_create_agent_runs.py, 0006_create_llm_calls.py,
 │   │                               # 0007_guardrails.py (grounding, confidence and attempt columns),
-│   │                               # 0008_vision.py (document_layouts, extractions.line_items_source)
+│   │                               # 0008_vision.py (document_layouts, extractions.line_items_source),
+│   │                               # 0009_retrieval.py (invoice_embeddings + HNSW index, query_conversations, query_runs,
+│   │                               # llm_calls.query_run_id)
 │   ├── tests/
 │   │   ├── conftest.py             # test DB, migrate once, client / fake_llm / storage fixtures, no-op pipeline,
 │   │   │                           # no LLM recorder by default (opt in: agent_pipeline, llm_recorder), retry_waits (no backoff sleep)
@@ -74,7 +82,8 @@ PostgreSQL + pgvector in Docker, and CI. Each backend feature adds a folder unde
 │   │   ├── modules/guardrails/     # test_matching, test_service, test_layout_grounding, test_layering
 │   │   ├── modules/validation/     # conftest (make_invoice(), line(), TODAY), test_validate_invoice, test_convert_currency, test_currencies, test_schema, test_layering
 │   │   ├── modules/agent/          # conftest (tool_turn, text_turn, happy_script, invoice_pdf, agent_pipeline), test_runner, test_tools,
-│   │   │                           # test_service, test_router, test_guardrails
+│   │   │                           # test_service, test_router, test_guardrails, test_retrieval (0010 tools + indexing), test_query
+│   │   ├── modules/retrieval/      # seed (indexed invoices with designed vectors), test_rules, test_service, test_router, test_layering
 │   │   ├── modules/observability/  # conftest (reuses agent fixtures), test_pricing, test_service, test_router, test_layering
 │   │   ├── modules/client_config/  # test_router, test_service
 │   │   └── test_app.py, test_config.py, test_migrations.py
@@ -97,6 +106,7 @@ PostgreSQL + pgvector in Docker, and CI. Each backend feature adds a folder unde
 │   │   │   ├── types.ts            # DTO types mirroring the backend schemas (money/dates as strings)
 │   │   │   └── queries.ts          # TanStack Query keys + hooks, POLL_INTERVAL_MS (10 s), PAGE_SIZE (20), mutations
 │   │   ├── lib/                    # pure logic, each with a test: format (money/dates/sizes), issues (path → target),
+│   │   │                           # chat (0010: stored conversation, step labels), vendorHistory (0010: range bar, position),
 │   │   │                           # agents (tool → role lanes), trace (timeline rows, bar geometry, usage per lane),
 │   │   │                           # upload (client checks, MAX_FILES 5), errors (friendly text),
 │   │   │                           # confidence (labels, score format, highlight spans),
@@ -105,13 +115,15 @@ PostgreSQL + pgvector in Docker, and CI. Each backend feature adds a folder unde
 │   │   ├── components/
 │   │   │   ├── ui/                 # Button (+ buttonClasses), Badge, Card, Alert/ErrorAlert, Dialog (native <dialog>),
 │   │   │   │                       # Skeleton, EmptyState, CopyButton, Tabs, Pagination, LiveRegion (+ announce)
-│   │   │   ├── layout/             # AppLayout (header, nav, skip link, footer, focus on navigation), ThemeToggle (+ test)
+│   │   │   ├── layout/             # AppLayout (header, nav, skip link, footer, focus on navigation, Ask AI launcher), ThemeToggle (+ test)
 │   │   │   ├── HealthBadge.tsx     # compact backend status in the header (+ test)
 │   │   │   ├── StatusBadge.tsx, severity.tsx, FileIcon.tsx, PageHeader.tsx
 │   │   │   ├── ConfidenceBadge.tsx  # ConfidenceBadge (pill / icon), NotFoundMarker, ShowInTextButton (0008)
 │   │   │   ├── confidenceStyle.ts   # high / medium / low: tone, icon, text colour
 │   │   ├── features/
 │   │   │   ├── upload/             # UploadPage, DropZone, UploadQueue, useUploadQueue (two uploads at a time) (+ page test)
+│   │   │   ├── chat/               # 0010: ChatLauncher (floating button, chat state), ChatPanel (lazy-loaded panel / sheet),
+│   │   │   │                       # ChatMessages (bubbles, answer card, citations, "How I found this"), useChat (+ test)
 │   │   │   ├── documents/          # DocumentsPage (URL filter/page, polling), DocumentsTable (table ≥ sm, cards < sm) (+ test)
 │   │   │   ├── detail/             # DocumentDetailPage (processing / completed / failed / not found), SummaryCard,
 │   │   │   │                       # StructuredData, LineItemsTable, IssuesList, IssueMarker, ConversionCard,
@@ -119,13 +131,14 @@ PostgreSQL + pgvector in Docker, and CI. Each backend feature adds a folder unde
 │   │   │   │                       # TraceSection + TraceTimeline (0007 waterfall), ReprocessButton (confirm dialog),
 │   │   │   │                       # ConfidenceSummary (0008: overall chip, Needs review banner),
 │   │   │   │                       # LayoutSection + TablesView + PagePreview (0009: Tables & layout card),
-│   │   │   │                       # labels (+ page, TraceSection and LayoutSection tests)
+│   │   │   │                       # VendorHistorySection (0010: vendor statistics, range bar, duplicates, similar invoices),
+│   │   │   │                       # labels (+ page, TraceSection, LayoutSection and VendorHistorySection tests)
 │   │   │   └── metrics/            # MetricsPage (/metrics: KPI tiles, Guardrails section, by model / by purpose,
 │   │   │                           # ?days= window) (+ test), GuardrailsSection (0008, confidence split bar),
-│   │   │                           # VisionSection (0009)
+│   │   │                           # VisionSection (0009), RetrievalSection (0010)
 │   │   ├── pages/NotFoundPage.tsx
 │   │   └── test/                   # setup (jsdom polyfills), fetchMock (route-based fetch stub), fixtures, render (whole app)
-│   ├── vite.config.ts              # React + Tailwind plugins, /api dev proxy, Vitest config
+│   ├── vite.config.ts              # React + Tailwind plugins, /api dev proxy (VITE_BACKEND_URL), vendor chunks, Vitest config
 │   ├── eslint.config.js, tsconfig*.json, package.json, package-lock.json
 │   ├── Dockerfile                  # node build -> nginx
 │   └── nginx.conf                  # SPA + /api/ -> backend:8000
@@ -158,7 +171,12 @@ forward `/api` to the backend.
 | POST | `/api/documents/{document_id}/reprocess` | `agent` | 202 `DocumentUploadResponse` (`processing`) and a background agent run with forced re-extraction; 409 `already_processing`; 404; 422; 502 `llm_not_configured` |
 | GET | `/api/documents/{document_id}/runs` | `agent` | 200 `AgentRunRead[]`, newest first, each with its tool-call `steps`; 404; 422 |
 | GET | `/api/documents/{document_id}/trace` | `observability` | `?run_id=` (default: latest run) → 200 `DocumentTrace`; 404 `not_found` (document) / `run_not_found` (run not of this document); 422 non-UUID. A document with no run yet → `run: null`, `spans: []`. Read-only |
-| GET | `/api/metrics/summary` | `observability` | `?days=1..365` (default: all time) → 200 `MetricsSummary` (incl. `guardrails`, 0008, and `vision`, 0009), computed live; 422 out of range |
+| GET | `/api/metrics/summary` | `observability` | `?days=1..365` (default: all time) → 200 `MetricsSummary` (incl. `guardrails`, 0008, `vision`, 0009, and `retrieval`, 0010), computed live; 422 out of range |
+| GET | `/api/documents/{document_id}/similar` | `retrieval` | `?limit=1..20 (5)` → 200 `SimilarInvoices` (cosine ≥ 0.30, itself excluded; `available: false` without a vector); 409 `not_indexed`; 404; 422. Read-only |
+| GET | `/api/documents/{document_id}/vendor-history` | `retrieval` | 200 `VendorHistory` (computed live: earlier and later invoices of the same vendor, statistics of the others, this invoice's position, same-number duplicates); 409 `not_indexed`; 404; 422. Read-only |
+| POST | `/api/query` | `agent` | body `QueryRequest` → 200 `QueryResponse` (one Query Agent turn, sync); 404 unknown `conversation_id` / `document_id`; 422 question not 3–500 chars; 502 `llm_not_configured` (nothing stored), `llm_*`, `query_failed` (the turn is stored as `failed`) |
+| GET | `/api/conversations/{conversation_id}` | `agent` | 200 `ConversationRead` (turns in order); 404; 422 |
+| GET | `/api/query/suggestions` | `agent` | `?document_id=` → 200 `QuerySuggestions` (example questions built by code from the index; no LLM) |
 | GET | `/api/config` | `client_config` | 200 `ClientConfig` — public settings for the UI; no secrets, no DB |
 | GET | `/api/docs` | FastAPI | Swagger UI (`/api/openapi.json` for the schema) |
 
@@ -221,6 +239,22 @@ forward `/api` to the backend.
 | `RunStats` | `agent` | `total`, `running`, `completed`, `failed`, `avg_ms`, `p50_ms`, `p95_ms` (completed runs; `percentile_cont`) — `agent.service.run_stats`, part of `MetricsSummary` |
 | `DocumentCounts` (internal) | `documents` | `processing`, `completed`, `failed` — `documents.service.count_by_status` |
 | `LLMCallRecord` (internal) | `core/llm.py` | `kind: chat \| embedding`, `model`, `usage`, `latency_ms`, `status`, `error_code`, `started_at`, `labels: TraceLabels`, `attempt` (0008) — handed to the registered recorder; never prompts or replies |
+| `IndexEntry` / `InvoiceHit` | `retrieval` | one `invoice_embeddings` row as the API sees it (`document_id`, `filename`, `uploaded_at`, `run_id`, `document_type`, `vendor`, `vendor_tax_id`, `invoice_number`, `invoice_date`, `currency`, `total_amount`, `total_base`, `base_currency`, `needs_review`, `embedded`); `InvoiceHit` adds `similarity` (cosine, 3 decimals; null for exact matches) |
+| `SimilarInvoices` | `retrieval` | `document_id`, `available`, `items: InvoiceHit[]` |
+| `MatchRule` / `VendorKey` | `retrieval` | `tax_id \| name` / `display`, `name_key`, `tax_key` (normalised, PRD 0010 D4) |
+| `HistoryStats` | `retrieval` | `base_currency`, `count`, `with_total`, `skipped_currencies[]`, `sum`, `min`, `max`, `mean`, `median`, `q1`, `q3`, `low_fence`, `high_fence` (`Decimal`, 2 places) |
+| `TargetPosition` | `retrieval` | `document_id`, `total_base`, `diff_vs_median`, `diff_pct`, `rank` (1 = largest), `position: below \| within \| above` (vs Q1–Q3) |
+| `VendorHistory` | `retrieval` | `document_id`, `vendor`, `match_rule`, `base_currency`, `invoices: IndexEntry[]` (≤ 50, newest invoice date first, incl. the target), `earlier`, `later`, `stats` (of the other invoices), `target`, `duplicates` |
+| `SearchFilters` / `SearchResult` | `retrieval` | `text`, `vendor`, `invoice_number`, `date_from`, `date_to`, `currency`, `min_total`, `max_total` (base currency), `document_type`, `limit` 1–20 (5) / `items`, `total_matches`, `aggregates`, `vendor_candidates`, `note` |
+| `PreparedEmbedding` / `IndexRequest` (internal) | `retrieval` | the card, its hash, vector (or null + `error_code`), model, `reused` / what the agent hands over at run completion |
+| `HistoryCheck` (internal) | `retrieval` | `skipped`, `reason`, `vendor`, `match_rule`, `earlier_invoices`, `issues: ValidationIssue[]` — what `check_vendor_history` returns |
+| `RetrievalStats` / `BackfillReport` (internal) | `retrieval` | index counts / back-fill counts (`indexed`, `embedded`, `skipped`, `failed`) |
+| `QueryRequest` | `agent` | `question` (stripped, 3–500 chars), `conversation_id`, `document_id` |
+| `Citation` | `agent` | `document_id`, `filename`, `vendor`, `invoice_number`, `invoice_date`, `total_amount`, `currency`, `needs_review` |
+| `QueryTurn` / `QueryResponse` | `agent` | `turn_id`, `turn`, `question`, `document_id`, `status`, `answer`, `answerable`, `numbers_verified`, `citations`, `steps: ToolStep[]`, `error_code`, `error`, `started_at`, `finished_at`, `duration_ms`; `QueryResponse` adds `conversation_id`, `usage {prompt_tokens, completion_tokens, embedding_tokens}` |
+| `ConversationRead` / `QuerySuggestions` | `agent` | `conversation_id`, `created_at`, `turns: QueryTurn[]` / `indexed_documents`, `questions[]` |
+| `QueryStats` / `IssueCounts` (internal) | `agent` | questions for metrics / completed runs per vendor-history code |
+| `RetrievalMetrics` | `observability` | `documents_indexed`, `documents_embedded`, `documents_not_embedded` (now), `duplicate_flags`, `outlier_flags`, `new_vendor_flags`, `conversations`, `questions`, `questions_failed`, `questions_unanswerable`, `questions_unverified`, `avg_question_ms`, `avg_cost_per_question` — `MetricsSummary.retrieval` |
 | `ClientConfig` | `client_config` | `max_upload_mb: int`, `accepted_content_types: string[]` (sorted; the same set the upload service accepts), `base_currency` |
 | Error body | `core/errors.py` | `{"error": {"code": str, "message": str, "details"?: any}}` — used for `AppError`, framework HTTP errors (404/405) and request validation (422, `details` = field errors) |
 
@@ -239,7 +273,8 @@ Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_ty
 `structured_extraction.service.extract_structured_data`), and `unsupported_currency` /
 `invalid_amount` (422, `CurrencyConversionError`; raised by
 `validation.service.convert_currency`), and `result_not_ready` / `result_unavailable` /
-`already_processing` (409, agent routes).
+`already_processing` (409, agent routes), and `not_indexed` (409, retrieval routes) and
+`query_failed` (502, `POST /query`: the turn ended without an answer).
 
 Agent run error codes (stored in `agent_runs.error_code` and as `documents.error =
 "code: message"`, never an HTTP response): `agent_incomplete` (the model stopped calling
@@ -247,7 +282,8 @@ tools before the summary), `agent_max_steps`, `internal_error`, `run_abandoned` 
 `running` row closed by the next run), or the fatal tool error's own code
 (`unreadable_document`, `no_text_found`, `invalid_llm_output`, `llm_refused`, `llm_error`, …).
 Recoverable tool error codes (sent back to the model only): `text_not_extracted`,
-`tables_required` (0009), `structured_data_missing`, `grounding_required` (0008), `validation_required`, `conversion_not_needed`,
+`tables_required` (0009), `structured_data_missing`, `grounding_required` (0008), `validation_required`,
+`history_check_required`, `similar_search_required` (0010), `conversion_not_needed`,
 `unsupported_currency`, `invalid_amount`, `invalid_arguments`, `unknown_tool`.
 
 ### Validation issue codes
@@ -269,6 +305,9 @@ Stable: codes may be added, never renamed. Severity is fixed per code except
 | `due_before_invoice` | error | `due_date` | due date before invoice date |
 | `date_in_future` | warning | `invoice_date` | more than 1 day after today |
 | `date_too_old` | info | `invoice_date` | more than 10 years before today |
+| `duplicate_invoice_number` | warning | `invoice_number` | 0010, `check_vendor_history`: an earlier-uploaded document from the same vendor has the same normalised invoice number |
+| `amount_outlier` | warning | `total_amount` | 0010: ≥ 5 earlier totals of the vendor (base currency); outside Q1 − 1.5·IQR … Q3 + 1.5·IQR and ≥ 25 % from the median; `expected` = median, `actual` = this total in the base currency |
+| `new_vendor` | info | `vendor` | 0010: no earlier-uploaded document from this vendor |
 
 `missing_field` severity — invoice: `vendor`, `total_amount` error; `invoice_number`,
 `invoice_date`, `currency` warning; `due_date`, empty `line_items` info. Receipt: `vendor`,
@@ -283,7 +322,7 @@ when the currency is missing or invalid).
 | Engine | PostgreSQL 18 + pgvector (`pgvector/pgvector:pg18-trixie`) |
 | Container / volume | `appfuxion-db` / `appfuxion_pgdata` (mounted at `/var/lib/postgresql`) |
 | Driver | SQLAlchemy 2.0 + psycopg 3 (`postgresql+psycopg://`) |
-| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents`; `0003` creates `document_texts`; `0004` creates `extractions`; `0005` creates `agent_runs`; `0006` creates `llm_calls`; `0007` adds `extractions.grounding`, `agent_runs.overall_confidence` / `needs_review`, `llm_calls.attempt`; `0008` creates `document_layouts` and adds `extractions.line_items_source` |
+| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents`; `0003` creates `document_texts`; `0004` creates `extractions`; `0005` creates `agent_runs`; `0006` creates `llm_calls`; `0007` adds `extractions.grounding`, `agent_runs.overall_confidence` / `needs_review`, `llm_calls.attempt`; `0008` creates `document_layouts` and adds `extractions.line_items_source`; `0009` creates `invoice_embeddings` (with an HNSW cosine index), `query_conversations`, `query_runs` and adds `llm_calls.query_run_id` |
 | ID rule | Every table's primary key is a native `UUID` (v4, `uuid.uuid4()`), exposed as a plain dashed UUID |
 | Test database | `appfuxion_test` on the same server (created and migrated by `conftest.py`) |
 
@@ -411,8 +450,8 @@ only — never prompts, replies or document text.
 | `document_id` | `UUID` NULL | FK `documents.id`, `ON DELETE CASCADE`; from the `document_id` context var |
 | `run_id` | `UUID` NULL | FK `agent_runs.id`, `ON DELETE CASCADE`; from the `run_id` context var |
 | `step_index` | `INTEGER` NULL | The tool step the call was made in; null for agent-loop turns |
-| `agent` | `VARCHAR(30)` NULL | `document` (B4 adds more) |
-| `purpose` | `VARCHAR(40)` | `vision_transcription`, `structured_extraction`, `grounding_retry` (0008), `agent_loop`, `summary`, `embedding`, `unknown` |
+| `agent` | `VARCHAR(30)` NULL | `document`, `query` (0010; B4 adds more) |
+| `purpose` | `VARCHAR(40)` | `vision_transcription`, `structured_extraction`, `multimodal_extraction` (0009), `grounding_retry` (0008), `agent_loop`, `summary`, `embedding`, `query_embedding` (0010), `unknown` |
 | `kind` | `VARCHAR(20)` | `CHECK` `chat` / `embedding` |
 | `model` | `VARCHAR(100)` | Model the API reported (requested model on failure) |
 | `prompt_version` | `VARCHAR(50)` NULL | The caller's `PROMPT_VERSION` |
@@ -422,12 +461,65 @@ only — never prompts, replies or document text.
 | `status`, `error_code` | `VARCHAR(10)` / `VARCHAR(50)` NULL | `CHECK` `ok` / `error`; the exception's code (`llm_error`, `llm_rate_limited`, `llm_timeout`, `llm_unavailable`, `llm_quota_exceeded`, `llm_invalid_output`, `internal_error`) |
 | `started_at` | `TIMESTAMPTZ` | When the call started (app clock, UTC) |
 | `attempt` | `INTEGER` | `CHECK >= 1`, default 1; 2+ for a transient-error retry of the same call (0008) |
+| `query_run_id` | `UUID` NULL | FK `query_runs.id`, `ON DELETE CASCADE`; the Query Agent turn the call belongs to (0010); such rows have no `document_id` / `run_id` |
 
 Constraints: `pk_llm_calls`, `fk_llm_calls_document_id_documents`,
-`fk_llm_calls_run_id_agent_runs`, `ck_llm_calls_kind_valid`, `ck_llm_calls_status_valid`, and
-non-negative checks on tokens, cost and latency, `ck_llm_calls_attempt_positive`; indexes
-`ix_llm_calls_document_id_started_at`, `ix_llm_calls_run_id`, `ix_llm_calls_started_at`. No
-retention job: rows go with their document.
+`fk_llm_calls_run_id_agent_runs`, `fk_llm_calls_query_run_id_query_runs`, `ck_llm_calls_kind_valid`,
+`ck_llm_calls_status_valid`, and non-negative checks on tokens, cost and latency,
+`ck_llm_calls_attempt_positive`; indexes `ix_llm_calls_document_id_started_at`,
+`ix_llm_calls_run_id`, `ix_llm_calls_started_at`, `ix_llm_calls_query_run_id`. No retention
+job: rows go with their document (or chat turn).
+
+### Table `invoice_embeddings`
+
+The invoice index (0010): one row per completed invoice / receipt, written by
+`retrieval.service.index_document` in the run's completing transaction (savepoint) or by the
+back-fill; replaced on reprocess; `unknown` documents have none.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `UUID` PK | v4 |
+| `document_id` | `UUID` | FK `documents.id`, `ON DELETE CASCADE`, unique (`uq_invoice_embeddings_document_id`) |
+| `run_id` | `UUID` NULL | FK `agent_runs.id`, `ON DELETE SET NULL`; null for back-filled rows |
+| `filename`, `uploaded_at` | `VARCHAR(255)` / `TIMESTAMPTZ` | Copied from the document; "earlier" = `uploaded_at` before |
+| `document_type` | `VARCHAR(20)` | `CHECK` `invoice` / `receipt` |
+| `vendor`, `vendor_tax_id` | `TEXT` / `VARCHAR(100)` NULL | As extracted |
+| `vendor_name_key`, `vendor_tax_key` | `VARCHAR(255)` / `VARCHAR(100)` NULL | Normalised (PRD 0010 D4), indexed |
+| `invoice_number`, `invoice_number_key` | `VARCHAR(100)` NULL | As extracted / letters + digits upper-case, indexed |
+| `invoice_date` | `DATE` NULL | Indexed |
+| `currency`, `total_amount` | `VARCHAR(3)` / `NUMERIC(14,2)` NULL | As extracted |
+| `total_base`, `base_currency` | `NUMERIC(14,2)` NULL / `VARCHAR(3)` | The total converted with the static rate table at index time; null when it cannot be converted |
+| `needs_review` | `BOOLEAN` NULL | From the run's confidence (back-fill: recomputed from the stored extraction) |
+| `card`, `card_hash`, `card_version` | `TEXT` / `VARCHAR(64)` / `VARCHAR(50)` | The embedded text, SHA-256 of version + card + model, `retrieval.card.v1` |
+| `embedding` | `vector(1536)` NULL | Null when the embedding call failed (the back-fill fills it); HNSW index `ix_invoice_embeddings_embedding_hnsw` (`vector_cosine_ops`, `m = 16`, `ef_construction = 64`) |
+| `embedding_model` | `VARCHAR(100)` NULL | Model the API reported |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` | |
+
+### Table `query_conversations`
+
+One Ask AI chat (0010): `id` (UUID PK), `created_at`, `updated_at` (bumped by every turn).
+"New chat" in the UI just starts another one; old ones stay for metrics and costs.
+
+### Table `query_runs`
+
+One question and its answer (0010), written by `agent.query.ask`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `UUID` PK | v4; the `turn_id` in the API and `llm_calls.query_run_id` |
+| `conversation_id` | `UUID` | FK `query_conversations.id`, `ON DELETE CASCADE` |
+| `turn` | `INTEGER` | `CHECK >= 1`; unique with `conversation_id` (`uq_query_runs_conversation_turn`; the conversation row is locked while numbering) |
+| `question` | `TEXT` | As asked (stripped) |
+| `document_id` | `UUID` NULL | FK `documents.id`, `ON DELETE SET NULL`; the page the user was on |
+| `status` | `VARCHAR(20)` | `CHECK` `running` / `completed` / `failed` |
+| `answer`, `answerable`, `numbers_verified` | `TEXT` / `BOOLEAN` / `BOOLEAN` NULL | Set when completed |
+| `citations`, `steps` | `JSONB` | `Citation[]`, `ToolStep[]`; default `[]` |
+| `model`, `prompt_version` | `VARCHAR(100)` NULL / `VARCHAR(50)` | `agent.query.v1` |
+| `prompt_tokens`, `completion_tokens`, `embedding_tokens` | `INTEGER` | `CHECK >= 0`, default 0 |
+| `error_code`, `error` | `VARCHAR(50)` / `TEXT` NULL | Why a turn failed (`agent_max_steps`, `agent_incomplete`, `llm_*`, `internal_error`) |
+| `started_at`, `finished_at` | `TIMESTAMPTZ` | `clock_timestamp()` default / set when the turn ends |
+
+Index `ix_query_runs_started_at` (metrics windows).
 
 ## Configuration
 
@@ -444,7 +536,8 @@ Read by `app/core/config.py` from environment variables, then `../.env` / `.env`
 | `DATABASE_URL` | blank | Optional full URL; derived from `POSTGRES_*` when blank |
 | `AGENT_MODE` | `multi` | `single` or `multi`; `multi` logs a warning and runs the single Document Agent until B4 |
 | `BASE_CURRENCY` | `MYR` | 3-letter ISO 4217 code; totals in another currency are converted to it (it must be in the rate table for a conversion to succeed) |
-| `AGENT_MAX_STEPS` | `12` | 1–30; most model turns per agent run (`agent_max_steps` when reached); 10 since 0008 added `check_grounding`, 12 since 0009 added `extract_tables` |
+| `AGENT_MAX_STEPS` | `14` | 1–30; most model turns per agent run (`agent_max_steps` when reached); 10 since 0008 added `check_grounding`, 12 since 0009 added `extract_tables`, 14 since 0010 added `check_vendor_history` and `search_similar_invoices` |
+| `QUERY_MAX_STEPS` | `6` | 1–20; most model turns per Ask AI question (0010) |
 | `MAX_UPLOAD_MB` | `10` | Upload size limit |
 | `STORAGE_DIR` | `./storage` | Upload directory (relative to `backend/`); `/app/storage` in Compose |
 | `VISION_MAX_PAGES` | `5` | Most pages of a scanned PDF sent to the vision model (>= 1), for the page call and for multimodal extraction (0009); later pages are skipped and logged |
@@ -471,6 +564,8 @@ ROUTERS: list[APIRouter] = [
     vision_router,
     structured_extraction_router,
     agent_router,
+    query_router,       # 0010: /query, /conversations, /query/suggestions (in agent/router.py)
+    retrieval_router,   # 0010: /documents/{id}/similar, /vendor-history
     observability_router,
     client_config_router,
 ]
@@ -499,7 +594,25 @@ the current `extract_text`; 0008: `validate_invoice` refuses with `grounding_req
 current extraction, and computes the confidence report right after validating);
 `service.run_document_agent(document_id, *, llm, storage, trigger, force)` opens its own
 session, records an `agent_runs` row, saves each step as it happens, and completes or fails
-the run and the document in one transaction.
+the run and the document in one transaction. Since 0010 the order adds `check_vendor_history`
+after `validate_invoice` and `search_similar_invoices` before `generate_summary`, which
+refuses with `history_check_required` / `similar_search_required` until both ran for the
+current validation; the completing transaction also indexes the document
+(`retrieval.service.index_document` in a savepoint). `AgentRunner(..., tool_choice=None)`
+passes `tool_choice` to every model turn when set.
+
+Retrieval (0010): `retrieval.service` is called by the agent (and observability) and calls only
+`documents.service`, `structured_extraction.service` + `guardrails.service` (back-fill) and
+`validation.service` (conversion, `merge_issues`); it never imports `agent`. The document
+tools use `check_vendor_history(db, document_id, data, *, base_currency)` +
+`merge_report`, `prepare_embedding(db, llm, document_id, data)` (card → vector, reused when
+the card hash is unchanged, never raises on an LLM error) and `similar_to(..., earlier_only=True)`.
+The Query Agent (`agent/query.py`: `ask(db, llm, request)`) builds three tools on
+`QueryToolContext` — `search_invoices` → `retrieval.service.search`, `get_vendor_history` →
+`retrieval.service.vendor_history`, `submit_answer` (citation filter, number check via
+`retrieval.service.unverified_numbers`) — and runs `AgentRunner(tool_choice="required",
+max_steps=QUERY_MAX_STEPS)` under `bind_trace(agent="query", query_run_id=…)`. The back-fill
+command is `python -m app.modules.retrieval.backfill` (it registers the ledger recorder itself).
 
 Text extraction is a plain service function, called by the agent's tool:
 `text_extraction.service.extract_text(db, storage, llm, document_id, *, force=False)` is what
@@ -581,7 +694,9 @@ through `documents.service` (`get_document`, `count_by_status`) and `agent.servi
 (`list_runs`, `run_stats`, `completed_run_ids`, `confidence_stats`), and since 0008
 `structured_extraction.service.grounding_stats` for the metrics `guardrails` block; since 0009
 `vision.service.layout_stats`, `structured_extraction.service.line_item_source_stats` and the
-ledger counts by purpose fill the `vision` block.
+ledger counts by purpose fill the `vision` block; since 0010 `retrieval.service.stats`,
+`agent.service.vendor_issue_counts` / `query_stats` and the ledger's cost per `query_run_id`
+fill the `retrieval` block.
 
 ## Dependencies added in 0002
 

@@ -15,6 +15,18 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Libraries change less often than the app: their own chunk caches across releases
+        // and keeps every chunk under the 500 kB warning.
+        manualChunks: {
+          react: ["react", "react-dom", "react-router"],
+          query: ["@tanstack/react-query"],
+        },
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],

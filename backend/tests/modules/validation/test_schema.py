@@ -78,4 +78,7 @@ def test_enum_values_match_the_prd() -> None:
         "due_before_invoice",
         "date_in_future",
         "date_too_old",
+        "duplicate_invoice_number",
+        "amount_outlier",
+        "new_vendor",
     ]

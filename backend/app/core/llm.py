@@ -44,6 +44,8 @@ from app.core.logging import TraceLabels, trace_labels
 logger = logging.getLogger(__name__)
 
 Message = Mapping[str, Any]
+# ``required`` forces a tool call on every turn (feature 0010, Query Agent).
+ToolChoice = Literal["auto", "required"]
 
 
 class Purpose(StrEnum):
@@ -56,6 +58,7 @@ class Purpose(StrEnum):
     AGENT_LOOP = "agent_loop"
     SUMMARY = "summary"
     EMBEDDING = "embedding"
+    QUERY_EMBEDDING = "query_embedding"
     UNKNOWN = "unknown"
 
 
@@ -63,6 +66,7 @@ class Agent(StrEnum):
     """Which agent made an LLM call (the ``agent`` trace label). B4 adds more."""
 
     DOCUMENT = "document"
+    QUERY = "query"
 
 
 @dataclass(frozen=True)
@@ -316,6 +320,7 @@ class LLMClient(Protocol):
         response_format: type[BaseModel] | None = None,
         tools: Sequence[Mapping[str, Any]] | None = None,
         temperature: float | None = None,
+        tool_choice: ToolChoice | None = None,
     ) -> LLMResponse:
         """Run a chat completion.
 
@@ -356,6 +361,7 @@ class OpenAILLMClient:
         response_format: type[BaseModel] | None = None,
         tools: Sequence[Mapping[str, Any]] | None = None,
         temperature: float | None = None,
+        tool_choice: ToolChoice | None = None,
     ) -> LLMResponse:
         chosen = model or (
             self._settings.openai_vision_model if vision else self._settings.openai_model
@@ -363,6 +369,8 @@ class OpenAILLMClient:
         kwargs: dict[str, Any] = {"model": chosen, "messages": [dict(m) for m in messages]}
         if tools:
             kwargs["tools"] = [dict(t) for t in tools]
+            if tool_choice is not None:
+                kwargs["tool_choice"] = tool_choice
         if temperature is not None:
             kwargs["temperature"] = temperature
 
@@ -452,6 +460,7 @@ class LLMCall:
     response_format: type[BaseModel] | None
     tools: list[dict[str, Any]] | None
     temperature: float | None
+    tool_choice: ToolChoice | None = None
 
 
 class FakeLLM:
@@ -472,12 +481,17 @@ class FakeLLM:
         model: str = "fake-model",
         embedding_dimensions: int = 1536,
         max_retries: int = 2,
+        embedder: Callable[[str], list[float]] | None = None,
     ) -> None:
         self.replies: deque[FakeReply] = deque(replies)
         self.max_attempts = 1 + max_retries
         self.usage = usage or TokenUsage(prompt_tokens=10, completion_tokens=5)
         self.model = model
         self.embedding_dimensions = embedding_dimensions
+        # Tests that need designed similarities supply vectors; ``embed_error`` (when set)
+        # is raised by the next ``embed`` call (feature 0010).
+        self.embedder = embedder
+        self.embed_error: Exception | None = None
         self.calls: list[LLMCall] = []
         self.embed_calls: list[list[str]] = []
         self.total_usage = TokenUsage()
@@ -495,6 +509,7 @@ class FakeLLM:
         response_format: type[BaseModel] | None = None,
         tools: Sequence[Mapping[str, Any]] | None = None,
         temperature: float | None = None,
+        tool_choice: ToolChoice | None = None,
     ) -> LLMResponse:
         self.calls.append(
             LLMCall(
@@ -504,6 +519,7 @@ class FakeLLM:
                 response_format=response_format,
                 tools=[dict(t) for t in tools] if tools else None,
                 temperature=temperature,
+                tool_choice=tool_choice,
             )
         )
 
@@ -544,11 +560,15 @@ class FakeLLM:
         self.embed_calls.append(list(texts))
         chosen = model or self.model
         with _observe("embedding", chosen) as meter:
+            if self.embed_error is not None:
+                error, self.embed_error = self.embed_error, None
+                raise error
             usage = TokenUsage(prompt_tokens=sum(len(t.split()) for t in texts))
             meter.usage = usage
         self.total_usage = self.total_usage + usage
+        embed = self.embedder or (lambda t: _fake_vector(t, self.embedding_dimensions))
         return EmbeddingResponse(
-            vectors=[_fake_vector(t, self.embedding_dimensions) for t in texts],
+            vectors=[embed(t) for t in texts],
             usage=usage,
             model=chosen,
         )

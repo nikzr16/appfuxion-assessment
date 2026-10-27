@@ -111,6 +111,8 @@ def happy_script(data: InvoiceData | None = None, summary: str = SUMMARY) -> lis
         data or invoice(),
         tool_turn("check_grounding"),
         tool_turn("validate_invoice"),
+        tool_turn("check_vendor_history"),
+        tool_turn("search_similar_invoices"),
         tool_turn("generate_summary"),
         summary,
     ]
@@ -122,7 +124,8 @@ def agent_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = get_settings()
     monkeypatch.setattr(settings, "agent_mode", "single")
     monkeypatch.setattr(settings, "base_currency", "MYR")
-    monkeypatch.setattr(settings, "agent_max_steps", 12)
+    monkeypatch.setattr(settings, "agent_max_steps", 14)
+    monkeypatch.setattr(settings, "query_max_steps", 6)
 
 
 @pytest.fixture

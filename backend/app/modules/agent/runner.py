@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.errors import AppError, LLMError
-from app.core.llm import LLMClient, Message, Purpose, TokenUsage, ToolCall
+from app.core.llm import LLMClient, Message, Purpose, TokenUsage, ToolCall, ToolChoice
 from app.core.logging import bind_trace
 from app.modules.agent.schema import StepError, StepStatus, ToolStep
 
@@ -107,8 +107,11 @@ class AgentRunner:
         max_steps: int,
         temperature: float = 0,
         prompt_version: str | None = None,
+        tool_choice: ToolChoice | None = None,
     ) -> None:
         self._llm = llm
+        # ``required`` stops a model from ending a turn with plain text (feature 0010).
+        self._tool_choice = tool_choice
         self._prompt_version = prompt_version
         self._tools = {tool.name: tool for tool in tools}
         self._definitions = [tool.definition() for tool in tools]
@@ -135,7 +138,10 @@ class AgentRunner:
             try:
                 with bind_trace(purpose=Purpose.AGENT_LOOP, prompt_version=self._prompt_version):
                     response = self._llm.complete(
-                        conversation, tools=self._definitions, temperature=self._temperature
+                        conversation,
+                        tools=self._definitions,
+                        temperature=self._temperature,
+                        tool_choice=self._tool_choice,
                     )
             except LLMError as exc:
                 raise fail(exc.code, exc.message, turn) from exc

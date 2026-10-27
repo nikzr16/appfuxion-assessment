@@ -127,11 +127,11 @@ Rule of thumb: **AI does the thinking; code does the maths and keeps the order.*
 
 | Agent | LLM? | Tools | Source |
 |---|---|---|---|
-| Document Agent (single mode) | yes | extract_text, extract_tables, extract_structured_data, check_grounding, validate_invoice, convert_currency, generate_summary | Brief Part 4 (+ B2 grounding, B5 tables) |
+| Document Agent (single mode) | yes | extract_text, extract_tables, extract_structured_data, check_grounding, validate_invoice, check_vendor_history, convert_currency, search_similar_invoices, generate_summary | Brief Part 4 (+ B2 grounding, B5 tables, B3 vendor history) |
 | Extraction Agent | yes | extract_text, extract_tables, extract_structured_data | Brief bonus (multi-agent) |
 | Validation Agent | yes — checks are deterministic code | validate_invoice, convert_currency, check_vendor_history | Brief bonus (multi-agent) |
 | Reporting Agent | yes | generate_summary, search_similar_invoices | Brief bonus (multi-agent) |
-| Query Agent | yes | search_invoices, get_vendor_history | Added for the RAG bonus (`POST /query`) |
+| Query Agent | yes | search_invoices, get_vendor_history, submit_answer | Added for the RAG bonus (`POST /query`, the Ask AI chat; memory per conversation) |
 | Coordinator | **no** — plain Python | runs Extraction → Validation → Reporting | Added glue |
 
 - All LLM agents share one `AgentRunner` (OpenAI tool-calling loop with a max-steps limit
@@ -140,7 +140,8 @@ Rule of thumb: **AI does the thinking; code does the maths and keeps the order.*
 - Code guards: `generate_summary` refuses to run until `validate_invoice` has run, and
   `validate_invoice` refuses until `check_grounding` has run for the current extraction (0008),
   and `extract_structured_data` refuses until `extract_tables` has run after the current
-  `extract_text` (0009).
+  `extract_text` (0009), and `generate_summary` refuses until `check_vendor_history` and
+  `search_similar_invoices` have run for the current validation (0010).
 
 ## Git Branching Model
 
@@ -186,7 +187,7 @@ Flow for each module:
   `OPENAI_EMBEDDING_MODEL`), `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
   `POSTGRES_HOST` (`localhost` locally, `db` in Compose), `DB_PORT`, `AGENT_MODE`,
   `MAX_UPLOAD_MB`, `STORAGE_DIR`, `VISION_MAX_PAGES`, `BASE_CURRENCY`,
-  `AGENT_MAX_STEPS`.
+  `AGENT_MAX_STEPS`, `QUERY_MAX_STEPS`.
 - Never commit real keys or passwords. The repo is public at submission.
 
 ## Testing And Definition Of Done

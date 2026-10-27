@@ -76,7 +76,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | `docs/prd/0007-observability-prd.md` | `modules/observability` | shipped | B1 — token ledger, traces, metrics; CI run #24 green (2026-10-27) |
 | `docs/prd/0008-guardrails-prd.md` | `modules/guardrails` | shipped | B2 — grounding check, confidence scoring, retries; CI run #28 green (2026-10-27) |
 | `docs/prd/0009-vision-prd.md` | `modules/vision` | shipped | B5 — tables, layout, multimodal; CI run #32 green (2026-10-27) |
-| *planned* 0010 | `modules/retrieval` + Query Agent | planned | B3 — pgvector |
+| `docs/prd/0010-retrieval-prd.md` | `modules/retrieval` + Query Agent | in progress | B3 — pgvector index, vendor-history checks, Query Agent (`POST /query`) |
 | *planned* 0011 | `modules/agent` (multi-agent) | planned | B4 — last, reuses every tool |
 
 ### Phase 4: Submission
@@ -95,7 +95,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | Docker Compose (full stack) | 0000 | 0006 | db + backend + frontend run with one command |
 | CI (GitHub Actions) | 0000 | each feature | backend + frontend jobs green |
 | LLM client (tokens, fakes, retries) | 0000 | 0007, 0008 | client seam + FakeLLM + token capture; every call measured and recorded through a hook (0007); transient-error retries with backoff + jitter in the seam, one ledger row per attempt (0008) |
-| Persistence (Postgres + pgvector, Alembic) | 0000 | 0010 | Postgres 18, pgvector enabled by baseline migration |
+| Persistence (Postgres + pgvector, Alembic) | 0000 | 0010 | Postgres 18, pgvector enabled by baseline migration; `invoice_embeddings` with an HNSW cosine index (0010) |
 | Observability | 0000 (logging) | 0007 | `llm_calls` token ledger with estimated cost, `/trace` + `/metrics/summary`, Trace card + Metrics page; JSON logs carry `document_id`, `run_id`, `agent`, `purpose` |
 | ENGINEERING_NOTES.md | 0000 (stub) | every feature | stub with architecture decisions |
 
@@ -113,6 +113,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | `docs/prd/0007-observability-prd.md` | 3 | observability | shipped |
 | `docs/prd/0008-guardrails-prd.md` | 3 | guardrails | shipped |
 | `docs/prd/0009-vision-prd.md` | 3 | vision | shipped |
+| `docs/prd/0010-retrieval-prd.md` | 3 | retrieval | in progress |
 
 ## Prioritization Log
 

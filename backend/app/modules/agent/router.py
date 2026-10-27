@@ -1,18 +1,28 @@
 from functools import partial
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.llm import LLMClient, get_llm_client
 from app.core.storage import Storage, get_storage
 from app.modules.agent import service
-from app.modules.agent.schema import AgentResult, AgentRunRead, RunTrigger
+from app.modules.agent.schema import (
+    AgentResult,
+    AgentRunRead,
+    ConversationRead,
+    QueryRequest,
+    QueryResponse,
+    QuerySuggestions,
+    RunTrigger,
+)
 from app.modules.documents import service as documents_service
 from app.modules.documents.schema import DocumentUploadResponse
 
 router = APIRouter(prefix="/documents", tags=["agent"])
+# The Query Agent (feature 0010): not about one document, so no prefix.
+query_router = APIRouter(tags=["query"])
 
 
 @router.get("/{document_id}/result", response_model=AgentResult)
@@ -50,3 +60,27 @@ def reprocess_document(
 def list_document_runs(document_id: UUID, db: Session = Depends(get_db)) -> list[AgentRunRead]:
     """The document's agent runs, newest first, each with its tool-call log."""
     return service.list_runs(db, document_id)
+
+
+@query_router.post("/query", response_model=QueryResponse)
+def ask_question(
+    request: QueryRequest,
+    db: Session = Depends(get_db),
+    llm: LLMClient = Depends(get_llm_client),
+) -> QueryResponse:
+    """Answer one question about the stored invoices; ``conversation_id`` continues a chat."""
+    return service.ask(db, llm, request)
+
+
+@query_router.get("/conversations/{conversation_id}", response_model=ConversationRead)
+def get_conversation(conversation_id: UUID, db: Session = Depends(get_db)) -> ConversationRead:
+    """A chat's questions and answers in order, to restore it after a reload."""
+    return service.get_conversation(db, conversation_id)
+
+
+@query_router.get("/query/suggestions", response_model=QuerySuggestions)
+def get_query_suggestions(
+    document_id: UUID | None = Query(None), db: Session = Depends(get_db)
+) -> QuerySuggestions:
+    """Example questions built from the indexed invoices (no LLM call)."""
+    return service.query_suggestions(db, document_id)

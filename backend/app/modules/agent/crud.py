@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import Select, case, func, select, update
 from sqlalchemy.orm import Session
 
-from app.modules.agent.model import AgentRun
+from app.modules.agent.model import AgentRun, QueryConversation, QueryRun
 from app.modules.agent.schema import RunStatus
 
 
@@ -151,3 +151,130 @@ def confidence_totals(
     )
     labels = dict(db.execute(_since(per_label, since)).all())
     return count, average, review, labels
+
+
+def issue_code_counts(
+    db: Session, codes: Sequence[str], *, since: datetime | None
+) -> dict[str, int]:
+    """Completed runs whose ``result.validation.issues`` contain each code (feature 0010)."""
+    counts: dict[str, int] = {}
+    for code in codes:
+        contains = AgentRun.result["validation"]["issues"].contains([{"code": code}])
+        query = select(func.count()).where(AgentRun.status == RunStatus.COMPLETED.value, contains)
+        counts[code] = db.execute(_since(query, since)).scalar_one()
+    return counts
+
+
+# -- Query Agent (feature 0010) -------------------------------------------------------------
+
+
+def create_conversation(db: Session) -> QueryConversation:
+    conversation = QueryConversation()
+    db.add(conversation)
+    db.flush()
+    return conversation
+
+
+def lock_conversation(db: Session, conversation_id: uuid.UUID) -> QueryConversation | None:
+    """The conversation row, locked until commit so two turns never take one number."""
+    return db.execute(
+        select(QueryConversation).where(QueryConversation.id == conversation_id).with_for_update()
+    ).scalar_one_or_none()
+
+
+def get_conversation(db: Session, conversation_id: uuid.UUID) -> QueryConversation | None:
+    return db.get(QueryConversation, conversation_id)
+
+
+def touch_conversation(db: Session, conversation_id: uuid.UUID) -> None:
+    db.execute(
+        update(QueryConversation)
+        .where(QueryConversation.id == conversation_id)
+        .values(updated_at=func.now())
+    )
+
+
+def next_turn(db: Session, conversation_id: uuid.UUID) -> int:
+    last = db.execute(
+        select(func.max(QueryRun.turn)).where(QueryRun.conversation_id == conversation_id)
+    ).scalar_one()
+    return (last or 0) + 1
+
+
+def create_query_run(db: Session, **values: Any) -> QueryRun:
+    run = QueryRun(status=RunStatus.RUNNING.value, citations=[], steps=[], **values)
+    db.add(run)
+    db.flush()
+    return run
+
+
+def finish_query_run(db: Session, run_id: uuid.UUID, *, values: dict[str, Any]) -> QueryRun:
+    db.execute(
+        update(QueryRun)
+        .where(QueryRun.id == run_id)
+        .values(finished_at=func.clock_timestamp(), **values)
+    )
+    db.flush()
+    run = db.get(QueryRun, run_id)
+    assert run is not None
+    db.refresh(run)
+    return run
+
+
+def list_turns(db: Session, conversation_id: uuid.UUID) -> Sequence[QueryRun]:
+    return (
+        db.execute(
+            select(QueryRun)
+            .where(QueryRun.conversation_id == conversation_id)
+            .order_by(QueryRun.turn)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def recent_completed_turns(
+    db: Session, conversation_id: uuid.UUID, *, limit: int
+) -> list[QueryRun]:
+    """The last ``limit`` completed turns, oldest first."""
+    rows = (
+        db.execute(
+            select(QueryRun)
+            .where(
+                QueryRun.conversation_id == conversation_id,
+                QueryRun.status == RunStatus.COMPLETED.value,
+            )
+            .order_by(QueryRun.turn.desc())
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    return list(reversed(rows))
+
+
+def query_totals(
+    db: Session, *, since: datetime | None
+) -> tuple[int, int, int, int, int, float | None]:
+    """(conversations, questions, failed, unanswerable, unverified, avg ms of completed)."""
+    duration_ms = func.extract("epoch", QueryRun.finished_at - QueryRun.started_at) * 1000
+    completed = QueryRun.status == RunStatus.COMPLETED.value
+    query = select(
+        func.count(func.distinct(QueryRun.conversation_id)),
+        func.count(),
+        func.count().filter(QueryRun.status == RunStatus.FAILED.value),
+        func.count().filter(completed, QueryRun.answerable.is_(False)),
+        func.count().filter(completed, QueryRun.numbers_verified.is_(False)),
+        func.avg(duration_ms).filter(completed),
+    )
+    if since is not None:
+        query = query.where(QueryRun.started_at >= since)
+    conversations, questions, failed, unanswerable, unverified, avg = db.execute(query).one()
+    return (
+        conversations,
+        questions,
+        failed,
+        unanswerable,
+        unverified,
+        float(avg) if avg is not None else None,
+    )

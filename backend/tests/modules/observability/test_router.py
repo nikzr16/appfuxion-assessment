@@ -37,11 +37,11 @@ def test_trace_of_an_uploaded_document(client: TestClient, processed: str) -> No
     assert body["llm_calls_recorded"] is True
     assert body["run"]["status"] == "completed"
     assert body["run"]["queue_ms"] >= 0
-    assert body["totals"]["llm_calls"] == 8
-    assert body["totals"]["cost_usd"] is None  # fake-model is unpriced
+    assert body["totals"]["llm_calls"] == 11
+    assert body["totals"]["cost_complete"] is False  # fake-model is unpriced
     assert body["prices_as_of"] == "2026-10-27"
     kinds = [span["kind"] for span in body["spans"]]
-    assert kinds.count("tool") == 6 and kinds.count("llm") == 8
+    assert kinds.count("tool") == 8 and kinds.count("llm") == 11
     assert all(span["attempt"] == 1 for span in body["spans"] if span["kind"] == "llm")
     llm = next(span for span in body["spans"] if span["kind"] == "llm")
     assert set(llm) >= {"purpose", "model", "prompt_tokens", "offset_ms", "duration_ms"}
@@ -71,12 +71,15 @@ def test_metrics_summary(client: TestClient, processed: str) -> None:
     assert body["documents"]["completed"] == 1
     assert body["documents"]["success_rate"] == 1.0
     assert body["runs"]["completed"] == 1
-    assert body["llm"]["llm_calls"] == 8
-    assert body["llm"]["avg_tokens_per_document"] == 120
+    assert body["llm"]["llm_calls"] == 11
+    assert body["llm"]["avg_tokens_per_document"] == 170
     assert body["vision"]["layouts_analysed"] == 1
+    assert body["retrieval"]["documents_indexed"] == 1
+    assert body["retrieval"]["new_vendor_flags"] == 1
     assert {g["key"] for g in body["by_purpose"]} == {
         "agent_loop",
         "structured_extraction",
+        "embedding",
         "summary",
     }
 

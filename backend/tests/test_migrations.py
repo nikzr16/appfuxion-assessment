@@ -18,7 +18,7 @@ def test_pgvector_type_is_usable(db_session: Session) -> None:
 
 def test_alembic_version_is_at_head(db_session: Session) -> None:
     version = db_session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert version == "0008"
+    assert version == "0009"
 
 
 def test_documents_table_has_a_native_uuid_primary_key(db_session: Session) -> None:
@@ -449,6 +449,7 @@ def test_llm_calls_table_has_native_uuid_keys_and_its_columns(db_session: Sessio
         "error_code",
         "started_at",
         "attempt",
+        "query_run_id",
     }
 
 
@@ -472,6 +473,7 @@ def test_llm_calls_table_has_its_constraints_and_indexes(db_session: Session) ->
         "ck_llm_calls_cost_usd_non_negative": "c",
         "ck_llm_calls_latency_ms_non_negative": "c",
         "ck_llm_calls_attempt_positive": "c",
+        "fk_llm_calls_query_run_id_query_runs": "f",
     }
     indexes = set(
         db_session.execute(
@@ -483,6 +485,7 @@ def test_llm_calls_table_has_its_constraints_and_indexes(db_session: Session) ->
         "ix_llm_calls_document_id_started_at",
         "ix_llm_calls_run_id",
         "ix_llm_calls_started_at",
+        "ix_llm_calls_query_run_id",
     }
 
 
@@ -670,4 +673,119 @@ def test_line_items_source_accepts_table_and_model_only(db_session: Session) -> 
     db_session.execute(text("UPDATE extractions SET line_items_source = 'table'"))
     with pytest.raises(IntegrityError):
         db_session.execute(text("UPDATE extractions SET line_items_source = 'guess'"))
+    db_session.rollback()
+
+
+# -- retrieval (0009) --------------------------------------------------------------------
+
+
+def test_invoice_embeddings_table_has_its_columns_and_vector(db_session: Session) -> None:
+    columns = dict(
+        db_session.execute(
+            text(
+                "SELECT column_name, udt_name FROM information_schema.columns "
+                "WHERE table_name = 'invoice_embeddings'"
+            )
+        ).all()
+    )
+    assert columns["id"] == columns["document_id"] == columns["run_id"] == "uuid"
+    assert columns["embedding"] == "vector"
+    assert columns["total_amount"] == columns["total_base"] == "numeric"
+    assert columns["invoice_date"] == "date"
+    assert {"card", "card_hash", "card_version", "vendor_name_key", "vendor_tax_key"} <= set(
+        columns
+    )
+    dimensions = db_session.execute(
+        text(
+            "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+            "WHERE attrelid = 'invoice_embeddings'::regclass AND attname = 'embedding'"
+        )
+    ).scalar_one()
+    assert dimensions == "vector(1536)"
+
+
+def test_invoice_embeddings_has_an_hnsw_cosine_index_and_one_row_per_document(
+    db_session: Session,
+) -> None:
+    indexes = dict(
+        db_session.execute(
+            text(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'invoice_embeddings'"
+            )
+        ).all()
+    )
+    hnsw = indexes["ix_invoice_embeddings_embedding_hnsw"]
+    assert "USING hnsw" in hnsw and "vector_cosine_ops" in hnsw
+    assert {
+        "ix_invoice_embeddings_vendor_name_key",
+        "ix_invoice_embeddings_vendor_tax_key",
+        "ix_invoice_embeddings_invoice_number_key",
+        "ix_invoice_embeddings_invoice_date",
+        "uq_invoice_embeddings_document_id",
+    } <= set(indexes)
+
+
+def _insert_embedding(db_session: Session, document_id: str, kind: str = "invoice") -> None:
+    db_session.execute(
+        text(
+            "INSERT INTO invoice_embeddings (id, document_id, filename, uploaded_at, "
+            "document_type, base_currency, card, card_hash, card_version) VALUES "
+            "(gen_random_uuid(), :document_id, 'a.pdf', now(), :kind, 'MYR', 'card', "
+            "repeat('0', 64), 'retrieval.card.v1')"
+        ),
+        {"document_id": document_id, "kind": kind},
+    )
+
+
+def test_invoice_embeddings_reject_unknown_documents_duplicates_and_cascade(
+    db_session: Session,
+) -> None:
+    document_id = _insert_document(db_session)
+    with pytest.raises(IntegrityError):
+        _insert_embedding(db_session, document_id, kind="unknown")
+    db_session.rollback()
+    document_id = _insert_document(db_session)
+    _insert_embedding(db_session, document_id)
+    with pytest.raises(IntegrityError):
+        _insert_embedding(db_session, document_id)
+    db_session.rollback()
+    document_id = _insert_document(db_session)
+    _insert_embedding(db_session, document_id)
+    db_session.execute(text("DELETE FROM documents WHERE id = :id"), {"id": document_id})
+    assert db_session.execute(text("SELECT count(*) FROM invoice_embeddings")).scalar() == 0
+    db_session.rollback()
+
+
+def test_query_runs_have_their_constraints_and_cascade_from_the_conversation(
+    db_session: Session,
+) -> None:
+    constraints = dict(
+        db_session.execute(
+            text(
+                "SELECT conname, contype FROM pg_constraint "
+                "WHERE conrelid = 'query_runs'::regclass AND contype <> 'n'"
+            )
+        ).all()
+    )
+    assert constraints == {
+        "pk_query_runs": "p",
+        "fk_query_runs_conversation_id_query_conversations": "f",
+        "fk_query_runs_document_id_documents": "f",
+        "uq_query_runs_conversation_turn": "u",
+        "ck_query_runs_status_valid": "c",
+        "ck_query_runs_turn_positive": "c",
+        "ck_query_runs_prompt_tokens_non_negative": "c",
+        "ck_query_runs_completion_tokens_non_negative": "c",
+        "ck_query_runs_embedding_tokens_non_negative": "c",
+    }
+    conversation = db_session.execute(
+        text("INSERT INTO query_conversations (id) VALUES (gen_random_uuid()) RETURNING id")
+    ).scalar_one()
+    insert = text(
+        "INSERT INTO query_runs (id, conversation_id, turn, question, status, prompt_version) "
+        "VALUES (gen_random_uuid(), :c, :turn, 'q', 'running', 'agent.query.v1')"
+    )
+    db_session.execute(insert, {"c": conversation, "turn": 1})
+    with pytest.raises(IntegrityError):
+        db_session.execute(insert, {"c": conversation, "turn": 1})
     db_session.rollback()

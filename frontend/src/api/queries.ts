@@ -9,15 +9,20 @@ import { useEffect, useRef } from "react";
 import { DEFAULT_CONFIG } from "../lib/upload.ts";
 import {
   ApiError,
+  askQuestion,
   getConfig,
+  getConversation,
   getDocument,
   getExtraction,
   getLayout,
   getMetrics,
   getResult,
   getRuns,
+  getSimilar,
+  getSuggestions,
   getText,
   getTrace,
+  getVendorHistory,
   listDocuments,
   reprocessDocument,
   uploadDocument,
@@ -41,6 +46,10 @@ export const queryKeys = {
   traces: (id: string) => ["trace", id] as const,
   trace: (id: string, runId: string | undefined) => ["trace", id, runId ?? "latest"] as const,
   metrics: (days: number | undefined) => ["metrics", days ?? "all"] as const,
+  similar: (id: string) => ["similar", id] as const,
+  vendorHistory: (id: string) => ["vendor-history", id] as const,
+  conversation: (id: string) => ["conversation", id] as const,
+  suggestions: (documentId: string | undefined) => ["suggestions", documentId ?? "none"] as const,
 };
 
 /** Only network failures and server errors are worth retrying; 4xx answers are final. */
@@ -159,6 +168,8 @@ export function useRefreshOnFinish(id: string, status: DocumentStatus | undefine
         queryKeys.text(id),
         queryKeys.extraction(id),
         queryKeys.layout(id),
+        queryKeys.similar(id),
+        queryKeys.vendorHistory(id),
         queryKeys.documents,
       ]) {
         void queryClient.invalidateQueries({ queryKey: key });
@@ -189,4 +200,41 @@ export function useReprocess(id: string) {
     mutationFn: () => reprocessDocument(id),
     onSuccess: () => markProcessing(queryClient, id),
   });
+}
+
+// -- Retrieval + Ask AI (0010) -------------------------------------------------------------
+
+export function useSimilar(id: string, { enabled }: { enabled: boolean }) {
+  return useQuery({ queryKey: queryKeys.similar(id), queryFn: () => getSimilar(id), enabled });
+}
+
+export function useVendorHistory(id: string, { enabled }: { enabled: boolean }) {
+  return useQuery({
+    queryKey: queryKeys.vendorHistory(id),
+    queryFn: () => getVendorHistory(id),
+    enabled,
+  });
+}
+
+/** A stored chat, to restore the Ask AI panel after a reload. */
+export function useConversation(id: string | null, { enabled }: { enabled: boolean }) {
+  return useQuery({
+    queryKey: queryKeys.conversation(id ?? "none"),
+    queryFn: () => getConversation(id as string),
+    enabled: enabled && id !== null,
+    staleTime: Infinity,
+  });
+}
+
+export function useSuggestions(documentId: string | undefined, { enabled }: { enabled: boolean }) {
+  return useQuery({
+    queryKey: queryKeys.suggestions(documentId),
+    queryFn: () => getSuggestions(documentId),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useAsk() {
+  return useMutation({ mutationFn: askQuestion });
 }

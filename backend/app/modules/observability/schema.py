@@ -156,6 +156,27 @@ class VisionMetrics(BaseModel):
     multimodal_calls: int
 
 
+class RetrievalMetrics(BaseModel):
+    """Invoice index, vendor-history flags and Ask AI questions (feature 0010, PRD D13)."""
+
+    # Index state now (not windowed).
+    documents_indexed: int
+    documents_embedded: int
+    documents_not_embedded: int
+    # Completed runs in the window whose validation has each vendor-history issue.
+    duplicate_flags: int
+    outlier_flags: int
+    new_vendor_flags: int
+    # Ask AI questions started in the window.
+    conversations: int
+    questions: int
+    questions_failed: int
+    questions_unanswerable: int
+    questions_unverified: int
+    avg_question_ms: int | None
+    avg_cost_per_question: Decimal | None
+
+
 class MetricsSummary(BaseModel):
     window_days: int | None
     since: datetime | None
@@ -169,4 +190,5 @@ class MetricsSummary(BaseModel):
     by_purpose: list[GroupTotals]
     guardrails: GuardrailMetrics
     vision: VisionMetrics
+    retrieval: RetrievalMetrics
     prices_as_of: date
