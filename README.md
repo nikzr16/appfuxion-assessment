@@ -47,12 +47,22 @@ How it fits together, and why, is in the
 
 ## Quick start (Docker)
 
-Requires Docker with Compose **v2.24 or newer** (the root `docker-compose.yml` uses `include` with `env_file`).
+You need:
+
+- Docker with Compose **v2.24 or newer** (the root `docker-compose.yml` uses `include` with
+  `env_file`), for example Docker Desktop
+- An OpenAI API key with access to `gpt-4.1-mini` and `text-embedding-3-small` (the defaults;
+  other models can be set in `.env`). One document costs about a cent or less.
 
 ```bash
+git clone https://github.com/nikzr16/appfuxion-assessment.git
+cd appfuxion-assessment
 cp .env.example .env        # then set OPENAI_API_KEY in .env
-docker compose up --build
+docker compose up --build   # first build takes a few minutes
 ```
+
+Open http://localhost:8080 once the backend reports healthy. Nothing else needs installing: the
+database, migrations (with the pgvector extension), backend and UI all run in containers.
 
 | What | Where |
 |---|---|
