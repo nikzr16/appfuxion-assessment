@@ -84,10 +84,11 @@ PRD yet; their numbers are expectations from the local feature map.
 
 **Trigger:** Phases 1–3 shipped.
 **Graduation criteria:** README setup works from a clean clone; ENGINEERING_NOTES covers architecture, prompt design, limitations, production improvements; repo public.
+**Status:** Graduated 2026-10-27 — `main` = `dev` (`ae806c4`), CI runs #44–#46 green, repo public at https://github.com/nikzr16/appfuxion-assessment.
 
 | PRD | Module | Status | Notes |
 |---|---|---|---|
-| — | `README.md`, `ENGINEERING_NOTES.md`, `samples/` | in progress | No PRD (docs pass). Done 2026-10-27: reviewer summary + diagram in ENGINEERING_NOTES, README "What it does" and samples, five made-up sample documents; clean clone from GitHub built and ran on fresh volumes (902 backend + 157 frontend tests green, all five samples processed); a flaky frontend wait fixed. Left: merge `dev` → `main`, make the repo public |
+| — | `README.md`, `ENGINEERING_NOTES.md`, `samples/` | shipped | No PRD (docs pass). 2026-10-27: reviewer summary + diagram in ENGINEERING_NOTES, README "What it does" and samples, five made-up sample documents; clean clone from GitHub built and ran on fresh volumes (902 backend + 157 frontend tests green, all five samples processed); a flaky frontend wait fixed; `dev` fast-forwarded into `main`; repo made public and checked logged out (README, notes diagram, samples; no `.env`, brief or uploads in the tree) |
 
 ## Cross-Cutting Concerns
 
