@@ -19,6 +19,7 @@ import {
   formatTimestamp,
   formatTokens,
 } from "../../lib/format.ts";
+import { agentLabel } from "../../lib/agents.ts";
 import { purposeLabel } from "../../lib/trace.ts";
 import { useDocumentTitle } from "../../lib/useDocumentTitle.ts";
 import { GuardrailsSection } from "./GuardrailsSection.tsx";
@@ -262,6 +263,16 @@ export default function MetricsPage() {
               rows={data.by_purpose}
               renderKey={purposeLabel}
             />
+            {data.by_agent && (
+              <UsageTable
+                id="metrics-by-agent"
+                title="By agent"
+                description="Which agent made the LLM calls, including the calls inside its tools."
+                keyHeader="Agent"
+                rows={data.by_agent}
+                renderKey={agentLabel}
+              />
+            )}
           </div>
           <p className="text-xs text-fg-subtle">
             Costs are estimates from a static price table dated {formatDate(data.prices_as_of)} (cached-input

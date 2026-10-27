@@ -41,9 +41,18 @@ def get(db: Session, run_id: uuid.UUID) -> AgentRun | None:
     return db.get(AgentRun, run_id)
 
 
-def set_steps(db: Session, run_id: uuid.UUID, steps: list[dict[str, Any]]) -> None:
-    """Replace the run's step log and flush; the caller commits."""
-    db.execute(update(AgentRun).where(AgentRun.id == run_id).values(steps=steps))
+def set_steps(
+    db: Session,
+    run_id: uuid.UUID,
+    steps: list[dict[str, Any]],
+    agents: list[dict[str, Any]] | None = None,
+) -> None:
+    """Replace the run's step log (and, when given, its agent breakdown) and flush; the
+    caller commits."""
+    values: dict[str, Any] = {"steps": steps}
+    if agents is not None:
+        values["agents"] = agents
+    db.execute(update(AgentRun).where(AgentRun.id == run_id).values(**values))
     db.flush()
 
 

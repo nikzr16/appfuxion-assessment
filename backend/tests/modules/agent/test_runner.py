@@ -79,12 +79,43 @@ def test_runs_tools_until_done_and_records_every_step() -> None:
     assert outcome.model == "fake-model"
     first, second = outcome.steps
     assert (first.index, first.turn, first.tool) == (0, 1, "echo")
+    assert first.agent is None
     assert first.arguments == {"text": "hi"}
     assert first.status is StepStatus.OK
     assert first.result == {"echo": "hi"}
     assert first.error is None
     assert first.duration_ms >= 0
     assert (second.index, second.turn, second.tool) == (1, 2, "finish")
+
+
+def test_steps_carry_the_agent_and_continue_from_the_offsets() -> None:
+    # Multi-agent mode (feature 0011): a later agent's steps continue the run's numbering.
+    recorder = Recorder()
+    fake = FakeLLM([tool_turn(("echo", {"text": "hi"})), tool_turn("finish")])
+    runner = AgentRunner(
+        fake, recorder.tools(), max_steps=5, agent="validation", step_offset=4, turn_offset=3
+    )
+
+    outcome = runner.run([{"role": "user", "content": "u"}], done=lambda: recorder.finished)
+
+    assert [(s.index, s.turn, s.agent) for s in outcome.steps] == [
+        (4, 4, "validation"),
+        (5, 5, "validation"),
+    ]
+    assert outcome.turns == 2  # the agent's own turns
+
+
+def test_the_step_limit_is_per_runner_whatever_the_turn_offset() -> None:
+    recorder = Recorder()
+    fake = FakeLLM([tool_turn(("echo", {"text": "x"}))] * 3)
+    runner = AgentRunner(fake, recorder.tools(), max_steps=2, turn_offset=10)
+
+    with pytest.raises(AgentRunError) as caught:
+        runner.run([{"role": "user", "content": "u"}], done=lambda: recorder.finished)
+
+    assert caught.value.code == "agent_max_steps"
+    assert caught.value.turns == 2
+    assert [s.turn for s in caught.value.steps] == [11, 12]
 
 
 def test_tool_choice_is_sent_only_when_the_runner_sets_it() -> None:

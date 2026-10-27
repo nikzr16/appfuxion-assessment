@@ -2,7 +2,6 @@
 
 import ast
 import json
-import logging
 import uuid
 from collections.abc import Callable
 from decimal import Decimal
@@ -149,30 +148,17 @@ def test_the_agent_gets_its_prompts_tools_and_no_document_text(
     assert all(line not in sent for line in INVOICE_LINES[1:])
 
 
-def test_multi_mode_logs_the_b4_warning_and_runs_single(
-    db_session: Session,
-    make_document: MakeDocument,
-    run_agent: RunAgent,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+def test_single_mode_records_the_document_agent_on_every_step(
+    db_session: Session, make_document: MakeDocument, run_agent: RunAgent
 ) -> None:
-    monkeypatch.setattr(get_settings(), "agent_mode", "multi")
+    # Single mode is unchanged by feature 0011: no agent breakdown, no B4 warning.
     document_id = make_document()
+    run_agent(document_id, FakeLLM(happy_script()))
 
-    with caplog.at_level(logging.WARNING, logger="app.modules.agent.service"):
-        run_agent(document_id, FakeLLM(happy_script()))
-
-    assert any("not available until B4" in r.getMessage() for r in caplog.records)
-    assert _runs(db_session, document_id)[0].mode == AgentMode.SINGLE
-
-
-def test_single_mode_logs_no_b4_warning(
-    make_document: MakeDocument, run_agent: RunAgent, caplog: pytest.LogCaptureFixture
-) -> None:
-    with caplog.at_level(logging.WARNING, logger="app.modules.agent.service"):
-        run_agent(make_document(), FakeLLM(happy_script()))
-
-    assert not any("B4" in r.getMessage() for r in caplog.records)
+    (run,) = _runs(db_session, document_id)
+    assert run.mode == AgentMode.SINGLE
+    assert {step["agent"] for step in run.steps} == {"document"}
+    assert run.agents == []
 
 
 # -- The model's choices ----------------------------------------------------------------

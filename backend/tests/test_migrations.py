@@ -18,7 +18,7 @@ def test_pgvector_type_is_usable(db_session: Session) -> None:
 
 def test_alembic_version_is_at_head(db_session: Session) -> None:
     version = db_session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert version == "0009"
+    assert version == "0010"
 
 
 def test_documents_table_has_a_native_uuid_primary_key(db_session: Session) -> None:
@@ -300,6 +300,7 @@ def test_agent_runs_table_has_native_uuid_keys_and_jsonb_columns(db_session: Ses
         "trigger",
         "status",
         "steps",
+        "agents",
         "result",
         "summary",
         "error_code",
@@ -385,13 +386,15 @@ def test_agent_runs_check_constraints_reject_bad_values(
     db_session.rollback()
 
 
-def test_agent_runs_defaults_steps_to_an_empty_list(db_session: Session) -> None:
+def test_agent_runs_defaults_steps_and_agents_to_empty_lists(db_session: Session) -> None:
     document_id = _insert_document(db_session)
     _insert_run(db_session, document_id)
-    steps = db_session.execute(
-        text("SELECT steps FROM agent_runs WHERE document_id = :id"), {"id": document_id}
-    ).scalar()
+    steps, agents = db_session.execute(
+        text("SELECT steps, agents FROM agent_runs WHERE document_id = :id"),
+        {"id": document_id},
+    ).one()
     assert steps == []
+    assert agents == []
     db_session.rollback()
 
 

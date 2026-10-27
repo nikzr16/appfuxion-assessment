@@ -1,8 +1,11 @@
-"""The Document Agent: runs the tools on one document, records the run, owns its status."""
+"""Document processing: runs the Document Agent (single mode) or the Coordinator's three
+agents (multi mode) on one document, records the run and owns the document's status."""
 
 import logging
 import time
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -14,11 +17,13 @@ from app.core.errors import ConflictError
 from app.core.llm import Agent, LLMClient, TokenUsage
 from app.core.logging import bind_document_id, bind_trace
 from app.core.storage import Storage
-from app.modules.agent import crud, prompts, query
+from app.modules.agent import coordinator, crud, prompts, query
+from app.modules.agent.coordinator import CoordinatorError
 from app.modules.agent.model import AgentRun
-from app.modules.agent.runner import AgentRunError, AgentRunner, RunOutcome
+from app.modules.agent.runner import AgentRunError, AgentRunner
 from app.modules.agent.schema import (
     AgentMode,
+    AgentPart,
     AgentResult,
     AgentRunRead,
     ConfidenceStats,
@@ -54,7 +59,8 @@ def run_document_agent(
     force: bool = False,
     today: date | None = None,
 ) -> None:
-    """Background task: process one document with the Document Agent (PRD 0005).
+    """Background task: process one document (PRD 0005), with the Document Agent in single
+    mode or the Coordinator in multi mode (PRD 0011 D10).
 
     Opens its own session. Expected failures (tool errors, step limit, LLM errors) end with
     the run and the document ``failed`` and are not raised; anything unexpected propagates
@@ -64,7 +70,7 @@ def run_document_agent(
     db = SessionLocal()
     try:
         with bind_document_id(str(document_id)):
-            mode = _resolve_mode(settings.agent_mode)
+            mode = AgentMode(settings.agent_mode)
             source = documents_service.get_document_source(db, document_id)
             stale = crud.fail_running(
                 db,
@@ -80,7 +86,11 @@ def run_document_agent(
                 mode=mode.value,
                 trigger=trigger.value,
                 model=settings.openai_model,
-                agent_prompt_version=prompts.AGENT_PROMPT_VERSION,
+                agent_prompt_version=(
+                    prompts.MULTI_PROMPT_VERSION
+                    if mode is AgentMode.MULTI
+                    else prompts.AGENT_PROMPT_VERSION
+                ),
                 summary_prompt_version=prompts.SUMMARY_PROMPT_VERSION,
             )
             db.commit()
@@ -88,15 +98,29 @@ def run_document_agent(
                 "agent run started",
                 extra={"run_id": str(run.id), "mode": mode.value, "trigger": trigger.value},
             )
-            with bind_trace(run_id=str(run.id), agent=Agent.DOCUMENT):
-                _execute(db, run, llm, storage, source.content_type, force=force, today=today)
+            # Multi mode binds each agent's own label in the Coordinator (PRD 0011 D8).
+            agent = Agent.DOCUMENT if mode is AgentMode.SINGLE else None
+            with bind_trace(run_id=str(run.id), agent=agent):
+                _execute(db, run, mode, llm, storage, source.content_type, force=force, today=today)
     finally:
         db.close()
+
+
+@dataclass(frozen=True)
+class _Finished:
+    """What a run recorded, whichever mode ran it."""
+
+    steps: list[ToolStep]
+    parts: list[AgentPart]
+    usage: TokenUsage  # agent-loop turns; the summary call is added from the context
+    model: str | None
+    turns: int
 
 
 def _execute(
     db: Session,
     run: AgentRun,
+    mode: AgentMode,
     llm: LLMClient,
     storage: Storage,
     content_type: str,
@@ -115,53 +139,93 @@ def _execute(
         force=force,
         today=today,
     )
+
+    def save_progress(steps: list[ToolStep], parts: list[AgentPart] | None = None) -> None:
+        # Keeps GET /runs live while the run is going; the tools commit their own rows too.
+        dumped = [part.model_dump(mode="json") for part in parts] if parts is not None else None
+        crud.set_steps(db, run.id, _dump_steps(steps), dumped)
+        db.commit()
+
+    try:
+        if mode is AgentMode.MULTI:
+            outcome = coordinator.run_agents(ctx, llm, content_type, on_progress=save_progress)
+            finished = _Finished(
+                outcome.steps, outcome.parts, outcome.usage, outcome.model, outcome.turns
+            )
+        else:
+            finished = _run_single(ctx, llm, content_type, save_progress)
+    except (AgentRunError, CoordinatorError) as exc:
+        db.rollback()
+        parts = exc.parts if isinstance(exc, CoordinatorError) else []
+        failed = _Finished(exc.steps, parts, exc.usage, exc.model, exc.turns)
+        _fail(db, run, ctx, failed, exc.code, exc.message)
+        usage = exc.usage + ctx.summary_usage
+        _log_finished(RunStatus.FAILED, exc.code, len(exc.steps), exc.turns, usage, started)
+        return
+
+    _complete(db, run, ctx, finished)
+    usage = finished.usage + ctx.summary_usage
+    _log_finished(RunStatus.COMPLETED, None, len(finished.steps), finished.turns, usage, started)
+
+
+def _run_single(
+    ctx: DocumentToolContext,
+    llm: LLMClient,
+    content_type: str,
+    save_progress: Callable[[list[ToolStep]], None],
+) -> _Finished:
+    """The Document Agent (PRD 0005): one agent with every tool."""
+    settings = get_settings()
     runner = AgentRunner(
         llm,
         build_document_tools(ctx),
         max_steps=settings.agent_max_steps,
         prompt_version=prompts.AGENT_PROMPT_VERSION,
+        agent=Agent.DOCUMENT.value,
     )
     messages = [
         {"role": "system", "content": prompts.agent_system_prompt(settings.base_currency)},
-        {"role": "user", "content": prompts.agent_user_prompt(str(run.document_id), content_type)},
+        {"role": "user", "content": prompts.agent_user_prompt(str(ctx.document_id), content_type)},
     ]
     recorded: list[ToolStep] = []
 
     def save_step(step: ToolStep) -> None:
-        # Keeps GET /runs live while the run is going; the tools commit their own rows too.
         recorded.append(step)
-        crud.set_steps(db, run.id, _dump_steps(recorded))
-        db.commit()
+        save_progress(recorded)
 
-    try:
-        outcome = runner.run(messages, done=lambda: ctx.summary is not None, on_step=save_step)
-    except AgentRunError as exc:
-        db.rollback()
-        usage = exc.usage + ctx.summary_usage
-        crud.finish_run(
-            db,
-            run.id,
-            values={
-                "status": RunStatus.FAILED.value,
-                "steps": _dump_steps(exc.steps),
-                "error_code": exc.code,
-                "error": exc.message,
-                "model": exc.model or run.model,
-                "prompt_tokens": usage.prompt_tokens,
-                "completion_tokens": usage.completion_tokens,
-            },
-        )
-        documents_service.mark_failed(db, run.document_id, f"{exc.code}: {exc.message}")
-        db.commit()
-        _log_finished(RunStatus.FAILED, exc.code, len(exc.steps), exc.turns, usage, started)
-        return
-
-    _complete(db, run, ctx, outcome)
-    usage = outcome.usage + ctx.summary_usage
-    _log_finished(RunStatus.COMPLETED, None, len(outcome.steps), outcome.turns, usage, started)
+    outcome = runner.run(messages, done=lambda: ctx.summary is not None, on_step=save_step)
+    return _Finished(outcome.steps, [], outcome.usage, outcome.model, outcome.turns)
 
 
-def _complete(db: Session, run: AgentRun, ctx: DocumentToolContext, outcome: RunOutcome) -> None:
+def _fail(
+    db: Session,
+    run: AgentRun,
+    ctx: DocumentToolContext,
+    finished: _Finished,
+    code: str,
+    message: str,
+) -> None:
+    """Fail the run and the document with the reason (PRD 0005 D6, 0011 D6)."""
+    usage = finished.usage + ctx.summary_usage
+    crud.finish_run(
+        db,
+        run.id,
+        values={
+            "status": RunStatus.FAILED.value,
+            "steps": _dump_steps(finished.steps),
+            "agents": [part.model_dump(mode="json") for part in finished.parts],
+            "error_code": code,
+            "error": message,
+            "model": finished.model or run.model,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+        },
+    )
+    documents_service.mark_failed(db, run.document_id, f"{code}: {message}")
+    db.commit()
+
+
+def _complete(db: Session, run: AgentRun, ctx: DocumentToolContext, finished: _Finished) -> None:
     """Save the result and complete the run and the document in one transaction (D8)."""
     assert ctx.structured is not None and ctx.validation is not None and ctx.summary is not None
     result = AgentResult(
@@ -172,19 +236,20 @@ def _complete(db: Session, run: AgentRun, ctx: DocumentToolContext, outcome: Run
         summary=ctx.summary,
         confidence=ctx.confidence,
     )
-    usage = outcome.usage + ctx.summary_usage
+    usage = finished.usage + ctx.summary_usage
     confidence = ctx.confidence
     crud.finish_run(
         db,
         run.id,
         values={
             "status": RunStatus.COMPLETED.value,
-            "steps": _dump_steps(outcome.steps),
+            "steps": _dump_steps(finished.steps),
+            "agents": [part.model_dump(mode="json") for part in finished.parts],
             "result": result.model_dump(mode="json"),
             "summary": ctx.summary,
             "overall_confidence": Decimal(str(confidence.overall)) if confidence else None,
             "needs_review": confidence.needs_review if confidence else None,
-            "model": outcome.model or run.model,
+            "model": finished.model or run.model,
             "prompt_tokens": usage.prompt_tokens,
             "completion_tokens": usage.completion_tokens,
         },
@@ -279,15 +344,6 @@ def confidence_stats(db: Session, *, since: datetime | None = None) -> Confidenc
 
 def _round_ms(value: float | None) -> int | None:
     return round(value) if value is not None else None
-
-
-def _resolve_mode(configured: str) -> AgentMode:
-    """PRD D13: ``multi`` is not available until B4, so it runs the single agent."""
-    if configured == AgentMode.MULTI:
-        logger.warning(
-            "multi-agent mode is not available until B4; running the single Document Agent"
-        )
-    return AgentMode.SINGLE
 
 
 def _dump_steps(steps: list[ToolStep]) -> list[dict[str, object]]:

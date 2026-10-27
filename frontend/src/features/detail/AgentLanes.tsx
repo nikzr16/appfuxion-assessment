@@ -43,7 +43,7 @@ const LANE_STATUS: Record<LaneStatus, { tone: Tone; label: string }> = {
   skipped: { tone: "neutral", label: "Not reached" },
 };
 
-function LaneCard({ lane, usage }: { lane: Lane; usage: Usage | undefined }) {
+function LaneCard({ lane, usage, multi }: { lane: Lane; usage: Usage | undefined; multi: boolean }) {
   const Icon = ROLE_ICON[lane.role];
   const info = ROLE_INFO[lane.role];
   const status = LANE_STATUS[lane.status];
@@ -110,14 +110,29 @@ function LaneCard({ lane, usage }: { lane: Lane; usage: Usage | undefined }) {
       ) : (
         <p className="mt-3 flex items-center gap-2 text-xs text-fg-subtle">
           <CircleDashed className="size-3.5" aria-hidden />
-          {lane.status === "skipped" ? "The run ended before this step." : "No steps yet."}
+          {lane.status === "skipped"
+            ? multi
+              ? "The run stopped before this agent started."
+              : "The run ended before this step."
+            : "No steps yet."}
         </p>
       )}
 
-      {(lane.totalMs > 0 || usage) && (
+      {(lane.totalMs > 0 || usage || lane.part) && (
         <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-3">
-          {lane.totalMs > 0 && (
-            <p className="text-xs text-fg-subtle tabular-nums">Total {formatDuration(lane.totalMs)}</p>
+          {(lane.totalMs > 0 || lane.part) && (
+            <p className="text-xs text-fg-subtle tabular-nums">
+              {lane.part && (
+                <>
+                  {lane.part.turns} {lane.part.turns === 1 ? "turn" : "turns"} ·{" "}
+                  <span className="font-mono" title="Prompt version">
+                    {lane.part.prompt_version}
+                  </span>
+                  {lane.totalMs > 0 && " · "}
+                </>
+              )}
+              {lane.totalMs > 0 && <span className="whitespace-nowrap">Total {formatDuration(lane.totalMs)}</span>}
+            </p>
           )}
           {usage && (
             <Badge tone="neutral" className="tabular-nums">
@@ -133,7 +148,8 @@ function LaneCard({ lane, usage }: { lane: Lane; usage: Usage | undefined }) {
 
 /**
  * Extraction → Validation → Reporting lanes for one run (PRD D19); null = run not started yet.
- * `usage` adds each lane's LLM tokens and estimated cost from the trace (PRD 0007 D11).
+ * `usage` adds each lane's LLM tokens and estimated cost from the trace (PRD 0007 D11). In
+ * multi mode each lane is a real agent, with its turns and prompt version (feature 0011).
  */
 export function AgentLanes({
   run,
@@ -161,7 +177,7 @@ export function AgentLanes({
               <ArrowRight className="hidden size-4 md:block" />
             </div>
           )}
-          <LaneCard lane={lane} usage={usage?.[lane.role]} />
+          <LaneCard lane={lane} usage={usage?.[lane.role]} multi={run?.mode === "multi"} />
         </Fragment>
       ))}
     </div>

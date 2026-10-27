@@ -42,6 +42,9 @@ class ToolStep(BaseModel):
 
     index: int
     turn: int
+    # The agent that made the call: ``document`` (single mode), ``extraction`` / ``validation``
+    # / ``reporting`` (multi mode, feature 0011); ``None`` on runs saved before 0011.
+    agent: str | None = None
     tool: str
     arguments: dict[str, Any]
     status: StepStatus
@@ -49,6 +52,22 @@ class ToolStep(BaseModel):
     error: StepError | None = None
     duration_ms: int
     started_at: datetime
+
+
+class AgentPart(BaseModel):
+    """One agent of a multi-agent run (PRD 0011 D3); only agents that started have one."""
+
+    agent: str
+    status: RunStatus
+    prompt_version: str
+    turns: int
+    steps: int
+    # Agent-loop turns plus, for Reporting, the summary call (the 0005 run-level meaning).
+    prompt_tokens: int
+    completion_tokens: int
+    started_at: datetime
+    finished_at: datetime
+    error_code: str | None = None
 
 
 class AgentResult(BaseModel):
@@ -75,6 +94,8 @@ class AgentRunRead(BaseModel):
     trigger: RunTrigger
     status: RunStatus
     steps: list[ToolStep]
+    # Per-agent breakdown in multi mode; ``[]`` in single mode (PRD 0011 D3).
+    agents: list[AgentPart] = []
     summary: str | None
     error_code: str | None
     error: str | None

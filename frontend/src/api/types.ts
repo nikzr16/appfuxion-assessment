@@ -230,6 +230,9 @@ export type StepStatus = "ok" | "error";
 export interface ToolStep {
   index: number;
   turn: number;
+  /** `document` (single mode) or `extraction` / `validation` / `reporting` (multi mode, 0011);
+   * missing on runs saved before 0011. */
+  agent?: string | null;
   tool: string;
   arguments: Record<string, unknown>;
   status: StepStatus;
@@ -239,6 +242,20 @@ export interface ToolStep {
   started_at: string;
 }
 
+/** One agent of a multi-agent run (feature 0011); only agents that started have one. */
+export interface AgentPart {
+  agent: string;
+  status: "completed" | "failed";
+  prompt_version: string;
+  turns: number;
+  steps: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  started_at: string;
+  finished_at: string;
+  error_code: string | null;
+}
+
 export interface AgentRunRead {
   id: string;
   document_id: string;
@@ -246,6 +263,8 @@ export interface AgentRunRead {
   trigger: RunTrigger;
   status: RunStatus;
   steps: ToolStep[];
+  /** Multi mode's per-agent breakdown; `[]` in single mode (feature 0011). */
+  agents?: AgentPart[];
   summary: string | null;
   error_code: string | null;
   error: string | null;
@@ -383,6 +402,8 @@ export interface MetricsSummary {
   llm: LLMMetrics;
   by_model: GroupTotals[];
   by_purpose: GroupTotals[];
+  /** Feature 0011. */
+  by_agent?: GroupTotals[];
   /** Feature 0008. */
   guardrails?: GuardrailMetrics;
   /** Feature 0009. */

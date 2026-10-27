@@ -188,6 +188,8 @@ class MetricsSummary(BaseModel):
     llm: LLMMetrics
     by_model: list[GroupTotals]
     by_purpose: list[GroupTotals]
+    # Per agent: document (single mode), extraction / validation / reporting (multi), query.
+    by_agent: list[GroupTotals]
     guardrails: GuardrailMetrics
     vision: VisionMetrics
     retrieval: RetrievalMetrics

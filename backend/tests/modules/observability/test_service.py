@@ -407,7 +407,9 @@ def test_metrics_summary_aggregates_documents_runs_and_the_ledger(
     _seed_call(db_session, run_id, document_id)
     _seed_call(db_session, run_id, document_id, purpose="summary", latency_ms=400)
     run_id, document_id = completed[1]
-    _seed_call(db_session, run_id, document_id, model="fake-model", cost_usd=None)
+    _seed_call(
+        db_session, run_id, document_id, model="fake-model", cost_usd=None, agent="extraction"
+    )
     _seed_call(
         db_session,
         failed_run,
@@ -444,6 +446,11 @@ def test_metrics_summary_aggregates_documents_runs_and_the_ledger(
     by_purpose = {g.key: g for g in summary.by_purpose}
     assert by_purpose["agent_loop"].llm_calls == 3
     assert by_purpose["summary"].avg_latency_ms == 400
+    # Feature 0011: the same totals per agent.
+    assert [(g.key, g.llm_calls, g.total_tokens) for g in summary.by_agent] == [
+        ("document", 3, 300),
+        ("extraction", 1, 150),
+    ]
     assert summary.ledger_since == NOW - timedelta(hours=1)
 
 

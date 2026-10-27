@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { makeRun, makeStep } from "../test/fixtures.ts";
-import { buildLanes, modeLabel, roleOfStep, runDurationMs, toolLabel, roleOfTool } from "./agents.ts";
+import { makeAgentPart, makeMultiRun, makeRun, makeStep, MULTI_STEPS } from "../test/fixtures.ts";
+import {
+  agentLabel,
+  buildLanes,
+  modeLabel,
+  roleOfStep,
+  runDurationMs,
+  toolLabel,
+  roleOfTool,
+} from "./agents.ts";
 
 const statuses = (run: Parameters<typeof buildLanes>[0]) =>
   buildLanes(run).map((lane) => [lane.role, lane.status]);
@@ -66,6 +74,57 @@ describe("buildLanes", () => {
   it("adds an Other lane only when an unknown tool ran", () => {
     expect(buildLanes(makeRun())).toHaveLength(3);
     expect(buildLanes(makeRun({ steps: [makeStep({ tool: "mystery" })] }))).toHaveLength(4);
+  });
+});
+
+describe("multi-agent lanes (feature 0011)", () => {
+  it("takes the role from the step's agent, falling back to the tool", () => {
+    expect(roleOfStep(makeStep({ tool: "search_similar_invoices", agent: "validation" }))).toBe("validation");
+    expect(roleOfStep(makeStep({ tool: "generate_summary", agent: "document" }))).toBe("reporting");
+    expect(roleOfStep(makeStep({ tool: "extract_text", agent: null }))).toBe("extraction");
+  });
+
+  it("gives each agent its lane, steps and breakdown", () => {
+    const lanes = buildLanes(makeMultiRun());
+    expect(lanes.map((lane) => [lane.role, lane.status, lane.steps.length, lane.part?.prompt_version])).toEqual([
+      ["extraction", "done", 2, "agent.extraction.v1"],
+      ["validation", "done", 1, "agent.validation.v1"],
+      ["reporting", "done", 1, "agent.reporting.v1"],
+    ]);
+  });
+
+  it("shows the first unfinished agent as running while the run goes", () => {
+    const run = makeMultiRun({
+      status: "running",
+      finished_at: null,
+      steps: MULTI_STEPS.slice(0, 3),
+      agents: [makeAgentPart()],
+    });
+    expect(statuses(run)).toEqual([
+      ["extraction", "done"],
+      ["validation", "running"],
+      ["reporting", "waiting"],
+    ]);
+  });
+
+  it("marks the failed agent and the agents that never started", () => {
+    const run = makeMultiRun({
+      status: "failed",
+      steps: MULTI_STEPS.slice(0, 3),
+      agents: [makeAgentPart(), makeAgentPart({ agent: "validation", status: "failed", error_code: "agent_max_steps" })],
+    });
+    expect(statuses(run)).toEqual([
+      ["extraction", "done"],
+      ["validation", "failed"],
+      ["reporting", "skipped"],
+    ]);
+  });
+
+  it("names agents for the metrics table", () => {
+    expect(agentLabel("validation")).toBe("Validation Agent");
+    expect(agentLabel("document")).toBe("Document Agent");
+    expect(agentLabel("query")).toBe("Query Agent");
+    expect(agentLabel("unknown")).toBe("Outside an agent");
   });
 });
 

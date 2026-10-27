@@ -9,6 +9,7 @@ import {
   makeConfidence,
   makeDocument,
   makeInvoice,
+  makeMultiRun,
   makeResult,
   makeRun,
   makeStep,
@@ -66,6 +67,31 @@ describe("DocumentDetailPage — completed", () => {
     const validation = screen.getByRole("region", { name: "Validation Agent: Done" });
     expect(within(validation).queryByText(/tokens/)).not.toBeInTheDocument();
     expect(screen.getByText(/4 turns · 1,500 tokens · \$0\.0010/)).toBeInTheDocument();
+  });
+
+  it("shows a multi-agent run as three real agents with their turns and tokens", async () => {
+    const trace = makeTrace();
+    const agentOf: Record<string, string> = { c1: "extraction", c2: "extraction", c3: "extraction", c4: "validation", c5: "reporting", c6: "reporting" };
+    mockApi({
+      ...completedRoutes(),
+      [`GET /documents/${DOC_ID}/runs`]: ok([makeMultiRun()]),
+      [`GET /documents/${DOC_ID}/trace`]: ok(
+        makeTrace({
+          run: trace.run && { ...trace.run, mode: "multi" },
+          spans: trace.spans.map((span) => (span.kind === "llm" ? { ...span, agent: agentOf[span.id] ?? null } : span)),
+        }),
+      ),
+    });
+    renderApp(PATH);
+
+    expect(await screen.findByText(/Multi-agent mode — each role is its own agent/)).toBeInTheDocument();
+    const extraction = screen.getByRole("region", { name: "Extraction Agent: Done" });
+    expect(within(extraction).getByText("agent.extraction.v1")).toBeInTheDocument();
+    expect(within(extraction).getByText(/2 turns/)).toBeInTheDocument();
+    expect(await within(extraction).findByText(/1,125 tokens/)).toBeInTheDocument();
+    const validation = screen.getByRole("region", { name: "Validation Agent: Done" });
+    expect(within(validation).getByText(/375 tokens/)).toBeInTheDocument();
+    expect(screen.queryByText(/the agent choosing each next tool/)).not.toBeInTheDocument();
   });
 
   it("highlights the field, row and cell each issue points at", async () => {

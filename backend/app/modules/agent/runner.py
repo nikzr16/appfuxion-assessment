@@ -108,8 +108,16 @@ class AgentRunner:
         temperature: float = 0,
         prompt_version: str | None = None,
         tool_choice: ToolChoice | None = None,
+        agent: str | None = None,
+        step_offset: int = 0,
+        turn_offset: int = 0,
     ) -> None:
         self._llm = llm
+        # Multi-agent mode (feature 0011): steps carry their agent, and index / turn continue
+        # from the agents before this one, so a run's steps stay numbered across agents.
+        self._agent = agent
+        self._step_offset = step_offset
+        self._turn_offset = turn_offset
         # ``required`` stops a model from ending a turn with plain text (feature 0010).
         self._tool_choice = tool_choice
         self._prompt_version = prompt_version
@@ -134,7 +142,8 @@ class AgentRunner:
         def fail(code: str, message: str, turns: int) -> AgentRunError:
             return AgentRunError(code, message, steps=steps, usage=usage, model=model, turns=turns)
 
-        for turn in range(1, self._max_steps + 1):
+        for agent_turn in range(1, self._max_steps + 1):
+            turn = self._turn_offset + agent_turn
             try:
                 with bind_trace(purpose=Purpose.AGENT_LOOP, prompt_version=self._prompt_version):
                     response = self._llm.complete(
@@ -144,19 +153,19 @@ class AgentRunner:
                         tool_choice=self._tool_choice,
                     )
             except LLMError as exc:
-                raise fail(exc.code, exc.message, turn) from exc
+                raise fail(exc.code, exc.message, agent_turn) from exc
             usage = usage + response.usage
             model = response.model
             if not response.tool_calls:
                 raise fail(
                     "agent_incomplete",
                     "The agent stopped calling tools before it finished.",
-                    turn,
+                    agent_turn,
                 )
             conversation.append(_assistant_message(response.content, response.tool_calls))
 
             for call in response.tool_calls:
-                step, fatal = self._call(call, index=len(steps), turn=turn)
+                step, fatal = self._call(call, index=self._step_offset + len(steps), turn=turn)
                 steps.append(step)
                 if on_step is not None:
                     on_step(step)
@@ -165,9 +174,9 @@ class AgentRunner:
                     {"role": "tool", "tool_call_id": call.id, "content": json.dumps(payload)}
                 )
                 if fatal and step.error is not None:
-                    raise fail(step.error.code, step.error.message, turn)
+                    raise fail(step.error.code, step.error.message, agent_turn)
                 if done():
-                    return RunOutcome(steps=steps, usage=usage, model=model, turns=turn)
+                    return RunOutcome(steps=steps, usage=usage, model=model, turns=agent_turn)
 
         raise fail(
             "agent_max_steps",
@@ -216,6 +225,7 @@ class AgentRunner:
         step = ToolStep(
             index=index,
             turn=turn,
+            agent=self._agent,
             tool=call.name,
             arguments=arguments,
             status=StepStatus.ERROR if error else StepStatus.OK,

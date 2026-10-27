@@ -82,6 +82,7 @@ def test_metrics_summary(client: TestClient, processed: str) -> None:
         "embedding",
         "summary",
     }
+    assert [g["key"] for g in body["by_agent"]] == ["document"]
 
     week = client.get("/api/metrics/summary", params={"days": 7})
     assert week.status_code == 200 and week.json()["window_days"] == 7

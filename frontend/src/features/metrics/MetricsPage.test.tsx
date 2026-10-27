@@ -42,6 +42,7 @@ function makeMetrics(overrides: Partial<MetricsSummary> = {}): MetricsSummary {
     },
     by_model: [group("gpt-4.1-mini", 24, 10_000, "0.006400")],
     by_purpose: [group("agent_loop", 16, 6_000, "0.003800"), group("summary", 4, 1_500, "0.001000")],
+    by_agent: [group("extraction", 10, 5_000, "0.003200"), group("document", 8, 3_000, "0.002000")],
     prices_as_of: "2026-10-27",
     ...overrides,
   };
@@ -65,6 +66,9 @@ describe("MetricsPage", () => {
     expect(within(byModel).getByRole("rowheader", { name: "gpt-4.1-mini" })).toBeInTheDocument();
     const byPurpose = screen.getByRole("region", { name: "By purpose" });
     expect(within(byPurpose).getByRole("rowheader", { name: "Agent decides next step" })).toBeInTheDocument();
+    const byAgent = screen.getByRole("region", { name: "By agent" });
+    expect(within(byAgent).getByRole("rowheader", { name: "Extraction Agent" })).toBeInTheDocument();
+    expect(within(byAgent).getByRole("rowheader", { name: "Document Agent" })).toBeInTheDocument();
     expect(screen.getByText(/static price table dated 27-10-2026/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Metrics" })).toHaveAttribute("aria-current", "page");
   });

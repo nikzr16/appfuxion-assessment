@@ -98,7 +98,7 @@ def test_vision_max_pages_must_be_at_least_one(value: int) -> None:
 
 def test_agent_settings_defaults() -> None:
     settings = make_settings()
-    assert settings.agent_mode == "multi"  # runs the single agent until B4 (PRD 0005 D13)
+    assert settings.agent_mode == "multi"  # the Coordinator's three agents (PRD 0011 D10)
     assert settings.base_currency == "MYR"
     assert settings.agent_max_steps == 14
     assert settings.query_max_steps == 6

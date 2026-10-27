@@ -17,8 +17,9 @@ searchable with pgvector.
 > page, line items of text PDFs are copied from their table by code, and scans and photos are
 > read by a multimodal model that sees the page images) and retrieval (`0010`: every processed
 > invoice is indexed with pgvector, compared with the vendor's earlier invoices for duplicate
-> numbers and unusual amounts, and searchable through the **Ask AI** chat) are in place; the
-> multi-agent bonus lands in `0011`; see [`docs/product-roadmap.md`](docs/product-roadmap.md).
+> numbers and unusual amounts, and searchable through the **Ask AI** chat) and multi-agent processing (`0011`: a plain-Python
+> Coordinator runs an **Extraction**, a **Validation** and a **Reporting** agent, each with its
+> own prompt and tools) are in place; see [`docs/product-roadmap.md`](docs/product-roadmap.md).
 
 ## Stack
 
@@ -241,12 +242,15 @@ never touch your development data, and they never call the real OpenAI API.
 One root `.env` (git-ignored) drives Docker Compose and the backend. Every key is
 documented in [`.env.example`](.env.example): OpenAI key and model names, Postgres
 credentials and ports, `AGENT_MODE`, `BASE_CURRENCY` (default `MYR`: totals in another
-currency are converted to it), `AGENT_MAX_STEPS` (default 14 model turns per agent run),
+currency are converted to it), `AGENT_MAX_STEPS` (default 14 model turns per single-mode run;
+multi mode limits each agent in code to 6 / 6 / 4 turns),
 `QUERY_MAX_STEPS` (default 6 model turns per Ask AI question),
 `OPENAI_MAX_RETRIES` (default 2 retries of a rate-limited, timed-out or failed OpenAI call,
 with backoff),
-`MAX_UPLOAD_MB`, `STORAGE_DIR`, and more. `AGENT_MODE=multi` is the default; until the
-multi-agent bonus ships it logs a warning and runs the single Document Agent.
+`MAX_UPLOAD_MB`, `STORAGE_DIR`, and more. `AGENT_MODE=multi` (the default) runs the
+Coordinator's three agents (Extraction → Validation → Reporting); `AGENT_MODE=single` runs the
+one Document Agent with every tool. Both give the same result shape; restart the backend after
+changing it.
 
 ## Project layout
 
