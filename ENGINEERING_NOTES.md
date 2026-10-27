@@ -1,7 +1,120 @@
 # Engineering Notes
 
-Each feature appends its notes to the four sections below. Entries are tagged with the
+The first part of this document is a short summary for reviewers. The four sections after it
+hold the full detail, written feature by feature as each one shipped and tagged with its
 feature number (`0000`, `0001`, ...).
+
+**Contents**
+
+- [Summary for reviewers](#summary-for-reviewers)
+  - [The system at a glance](#the-system-at-a-glance)
+  - [Where each part of the brief lives](#where-each-part-of-the-brief-lives)
+  - [The decisions that shape everything](#the-decisions-that-shape-everything)
+  - [The most important limitations](#the-most-important-limitations)
+  - [What would change first for production](#what-would-change-first-for-production)
+- [1. Architecture decisions](#1-architecture-decisions)
+- [2. Prompt design](#2-prompt-design)
+- [3. Limitations](#3-limitations)
+- [4. Production improvements](#4-production-improvements)
+
+## Summary for reviewers
+
+### The system at a glance
+
+```mermaid
+flowchart TB
+    UI["React UI<br/>(nginx, /api proxy)"] -->|"POST /api/documents"| API["FastAPI"]
+    API -->|"BackgroundTasks"| CO["Coordinator<br/>(plain Python, fixed order)"]
+
+    subgraph Agents["Agents on one AgentRunner"]
+        EX["Extraction Agent<br/>extract_text · extract_tables<br/>extract_structured_data · check_grounding"]
+        VA["Validation Agent<br/>validate_invoice · check_vendor_history<br/>convert_currency"]
+        RE["Reporting Agent<br/>search_similar_invoices · generate_summary"]
+        EX -->|"code-written brief"| VA -->|"code-written brief"| RE
+    end
+
+    CO --> EX
+    EX & VA & RE <--> LLM["OpenAI<br/>(one seam: app/core/llm.py)"]
+    EX & VA & RE --> DB[("PostgreSQL 18 + pgvector<br/>documents · runs · results<br/>llm_calls ledger · invoice index")]
+    UI -->|"Ask AI: POST /api/query"| QA["Query Agent"] --> DB
+```
+
+An upload is stored and answered at once (`{document_id, status: "processing"}`); the
+Coordinator then runs the three agents in a fixed order. Every tool is a plain service
+function, and every number the user sees (totals checks, tax, conversion, vendor statistics,
+confidence) comes from deterministic code, not the model. `AGENT_MODE=single` runs the same
+tools through one Document Agent instead, with the same result shape.
+
+### Where each part of the brief lives
+
+| Brief | Feature | Main code | Notes |
+|---|---|---|---|
+| Part 1: document upload | `0001` | `modules/documents` | [0001](#0001---documents-upload-api) |
+| Part 2: text extraction (PDF + OCR) | `0002` | `modules/text_extraction` | [0002](#0002---text-extraction) |
+| Part 3: structured extraction | `0003` | `modules/structured_extraction` | [0003](#0003---structured-extraction) |
+| Part 4: AI agent + summary | `0005` | `modules/agent` | [0005](#0005---agent-document-agent) |
+| Part 5: validation tool | `0004` | `modules/validation` | [0004](#0004---validation) |
+| UI | `0006` | `frontend/` | [0006](#0006---frontend-web-ui) |
+| Bonus: observability | `0007` | `modules/observability` | [0007](#0007---observability-token-ledger-traces-metrics) |
+| Bonus: guardrails | `0008` | `modules/guardrails` | [0008](#0008---guardrails-grounding-confidence-retries) |
+| Bonus: vision (tables, layout, multimodal) | `0009` | `modules/vision` | [0009](#0009---vision-tables-layout-multimodal-extraction) |
+| Bonus: retrieval (pgvector, Ask AI) | `0010` | `modules/retrieval` | [0010](#0010---retrieval-pgvector-vendor-history-ask-ai) |
+| Bonus: multi-agent | `0011` | `modules/agent/coordinator.py` | [0011](#0011---multi-agent-coordinator--extraction--validation--reporting-agents) |
+
+Each feature also has a PRD (`docs/prd/`), an implementation plan (`docs/plan/`) and a log of
+where the build differed from the plan (`docs/decisions/`).
+
+### The decisions that shape everything
+
+1. **AI does the thinking; code does the maths and keeps the order.** The model reads,
+   interprets and writes. Arithmetic, validation, currency conversion and the step order are
+   code that the agents call as tools. Each tool refuses to run before its prerequisite, so no
+   run can summarise an invoice it has not validated.
+2. **Untrusted text never steers the agents.** Tools are bound to one `document_id` in code and
+   return short facts (counts, statuses), never the document's text. Agents hand over through
+   briefs that code writes from saved data, so an instruction hidden in an invoice has no path
+   from one agent to the next.
+3. **Every claim is checked by code after the model makes it.** Extracted values are looked up
+   in the document's own text (grounding), the summary must mention every validation issue, and
+   Ask AI's numbers must appear in its tool results. Each check gets one retry with the
+   specific problems listed, then code steps in (it appends the missing sentence, or marks the
+   value or answer as unverified).
+4. **One store, one LLM seam.** PostgreSQL holds the data, the ledger and the pgvector index,
+   so there is no second service to keep in step. Every OpenAI call goes through
+   `app/core/llm.py`, which handles models, retries with backoff, timing, token and cost
+   recording. Tests swap in a scripted `FakeLLM`, so CI never calls OpenAI.
+5. **Exact money everywhere.** `Decimal` in Python, decimal strings in JSON and in the UI, and
+   a tolerance of one minor unit of the document's currency (JPY 1, MYR 0.01, KWD 0.001).
+6. **Multi-agent because it measured better, not because it is fashionable.** On the same
+   invoices, three small agents used about half the agent-loop tokens of one large agent and
+   cost about 40 % less, for about 2 s more per document ([0011](#0011---multi-agent-coordinator--extraction--validation--reporting-agents)).
+   The order between agents is code, not an LLM router, because no real decision exists there.
+
+### The most important limitations
+
+- **No job queue.** Processing runs in FastAPI `BackgroundTasks`; if the backend stops
+  mid-run, that document stays `processing` until it is reprocessed.
+- **Static, dated rates and prices.** Currency conversion uses a 25-currency snapshot dated
+  2026-10-26, and cost estimates use a price table dated 2026-10-27.
+- **Heuristics tuned by hand, not on labelled data.** Grounding thresholds, confidence weights,
+  table detection and the vendor outlier rule were tuned on sample invoices.
+- **Scans get less than text PDFs.** Scanned pages are read by a vision model: only the first
+  5 pages, no positions on the page, and table rows are a hint rather than a source.
+- **No authentication or per-user data**, and no end-to-end browser tests in CI.
+
+### What would change first for production
+
+1. A job queue with retries, timeouts and a sweeper for stuck runs, and resuming a failed run
+   from the failing agent.
+2. Authentication, per-user ownership, uploads streamed to object storage, malware scanning,
+   and PDF parsing in a sandboxed worker.
+3. A labelled evaluation set run in CI to tune thresholds and compare prompt versions and
+   agent modes before shipping.
+4. OpenTelemetry traces and Prometheus metrics with alerts on error rate, latency and spend.
+5. Live exchange rates at the invoice date, and vendor master data with confirmed aliases.
+
+The full lists, per feature, are in [3. Limitations](#3-limitations) and
+[4. Production improvements](#4-production-improvements).
 
 ## 1. Architecture decisions
 
@@ -227,6 +340,7 @@ feature number (`0000`, `0001`, ...).
   allows only one `running` run per document.
 - **`AGENT_MODE` stays `multi`.** The default is the finished product's mode; until B4 ships,
   `multi` logs a warning and runs the single Document Agent, and the run records `single`.
+  (Resolved in 0011: `multi` runs the Coordinator's three agents.)
 
 ### 0006 - Frontend (web UI)
 
@@ -611,8 +725,8 @@ feature number (`0000`, `0001`, ...).
 
 ## 2. Prompt design
 
-_TODO per feature: prompt structure, versioning (`PROMPT_VERSION`), output schemas, and how
-hallucination is prevented (fields absent from the document are `null`)._
+Every prompt lives in its module's `prompts.py` with a version string that is stored on each
+row and ledger entry it produces; the version is bumped on any wording change.
 
 **0002 - Text extraction** (`app/modules/text_extraction/prompts.py`, `PROMPT_VERSION =
 "text_extraction.v1"`, stored on every vision row)
@@ -749,7 +863,7 @@ hallucination is prevented (fields absent from the document are `null`)._
 
 ## 3. Limitations
 
-_TODO per feature: known gaps (for example the static, dated currency-rate table)._
+Known gaps, per feature. Where a later feature closed a gap, the entry says so.
 
 **0001 - Documents**
 - The upload size check runs after Starlette has received the multipart body (it is
@@ -837,7 +951,7 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
 - PDF rendering is serialised by a process-wide lock, so scanned PDFs uploaded together are
   rendered one at a time (their vision calls still run in parallel).
 - `AGENT_MODE=multi` does not run a multi-agent pipeline yet (B4); it runs the single agent
-  with a warning.
+  with a warning. (Resolved in 0011.)
 
 **0006 - Frontend**
 - Status is polled every 10 s, so a finished document can take up to 10 s to show; there is
@@ -865,7 +979,8 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
   Token and cost averages cover only documents processed since 0007 (`ledger_since`).
 - Ledger rows are kept as long as their document; there is no retention or roll-up job.
 - The trace view polls every 10 s like the rest of the page, so a running trace lags. Tokens
-  per lane are mapped from tool to role until B4 gives each lane its own agent.
+  per lane are mapped from tool to role until B4 gives each lane its own agent. (Resolved in
+  0011: in multi mode each lane is a real agent with its own ledger rows.)
 - `embed` calls are recorded; since 0010 the invoice cards and Ask AI questions use them.
 
 **0008 - Guardrails**
@@ -941,9 +1056,9 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
 
 ## 4. Production improvements
 
-_TODO per feature: what would change for production (auth, a real job queue, object
-storage such as S3 behind the `Storage` interface, secrets management, metrics and tracing,
-retries and rate-limit handling, database backups)._
+What would change before real production use, per feature. Across all of them: a job queue,
+authentication, object storage behind the existing `Storage` interface, a secrets manager
+instead of `.env`, and database backups.
 
 **0001 - Documents**
 - Enforce the body size limit at the edge (nginx `client_max_body_size`) and stream

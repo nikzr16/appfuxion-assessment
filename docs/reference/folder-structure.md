@@ -145,6 +145,7 @@ PostgreSQL + pgvector in Docker, and CI. Each backend feature adds a folder unde
 │   ├── Dockerfile                  # node build -> nginx
 │   └── nginx.conf                  # SPA + /api/ -> backend:8000
 ├── db/docker-compose.yml           # appfuxion-db (pgvector pg18), standalone
+├── samples/                        # made-up invoices + receipt to try the app; make_samples.py rebuilds them
 ├── docker-compose.yml              # includes db/, adds backend + frontend
 ├── .github/workflows/ci.yml        # backend + frontend jobs
 ├── .env.example                    # every config key, documented (.env is git-ignored)
