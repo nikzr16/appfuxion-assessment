@@ -107,6 +107,34 @@ export interface AgentResult {
   validation: ValidationReport;
   conversion: ConversionResult | null;
   summary: string;
+  /** Feature 0008; `null` for unknown documents, absent/`null` for results saved before 0008. */
+  confidence?: ConfidenceReport | null;
+}
+
+// -- Guardrails (feature 0008) -------------------------------------------------------
+
+export type GroundingStatus = "grounded" | "weak" | "ungrounded" | "inferred" | "skipped";
+export type ConfidenceLabel = "high" | "medium" | "low";
+
+export interface FieldConfidence {
+  path: string;
+  score: number;
+  label: ConfidenceLabel;
+  grounding: GroundingStatus;
+  page: number | null;
+  /** Character offsets into `raw_text` as `GET /text` returns it. */
+  start: number | null;
+  end: number | null;
+  reasons: string[];
+}
+
+export interface ConfidenceReport {
+  overall: number;
+  label: ConfidenceLabel;
+  needs_review: boolean;
+  review_fields: string[];
+  components: { fields: number; completeness: number; validation: number };
+  fields: Record<string, FieldConfidence>;
 }
 
 export type AgentMode = "single" | "multi";
@@ -217,6 +245,8 @@ export interface LLMSpan {
   started_at: string;
   offset_ms: number;
   duration_ms: number;
+  /** 1 = first try; 2+ = a transient-error retry (feature 0008). */
+  attempt?: number;
 }
 
 export type TraceSpan = ToolSpan | LLMSpan;
@@ -268,5 +298,20 @@ export interface MetricsSummary {
   llm: LLMMetrics;
   by_model: GroupTotals[];
   by_purpose: GroupTotals[];
+  /** Feature 0008. */
+  guardrails?: GuardrailMetrics;
   prices_as_of: string;
+}
+
+export interface GuardrailMetrics {
+  runs_scored: number;
+  avg_confidence: number | null;
+  by_label: Record<ConfidenceLabel, number>;
+  needs_review: number;
+  needs_review_rate: number | null;
+  values_checked: number;
+  values_grounded: number;
+  grounding_rate: number | null;
+  grounding_retry_extractions: number;
+  transient_retries: number;
 }

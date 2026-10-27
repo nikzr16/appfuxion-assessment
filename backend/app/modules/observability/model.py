@@ -28,6 +28,7 @@ class LlmCall(Base):
         CheckConstraint("completion_tokens >= 0", name="completion_tokens_non_negative"),
         CheckConstraint("cost_usd >= 0", name="cost_usd_non_negative"),
         CheckConstraint("latency_ms >= 0", name="latency_ms_non_negative"),
+        CheckConstraint("attempt >= 1", name="attempt_positive"),
         Index("ix_llm_calls_document_id_started_at", "document_id", "started_at"),
         Index("ix_llm_calls_run_id", "run_id"),
         Index("ix_llm_calls_started_at", "started_at"),
@@ -55,3 +56,5 @@ class LlmCall(Base):
     status: Mapped[str] = mapped_column(String(10))
     error_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # 1 = first try; 2+ = transient-error retries of the same call (feature 0008).
+    attempt: Mapped[int] = mapped_column(Integer, default=1, server_default="1")

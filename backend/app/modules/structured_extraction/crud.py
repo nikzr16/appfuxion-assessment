@@ -1,8 +1,9 @@
 import uuid
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, Row, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -33,6 +34,7 @@ def upsert(db: Session, *, values: Mapping[str, Any], overwrite: bool) -> Extrac
                 "attempts": statement.excluded.attempts,
                 "prompt_tokens": statement.excluded.prompt_tokens,
                 "completion_tokens": statement.excluded.completion_tokens,
+                "grounding": None,  # a new extraction is never shown with an old report
                 "updated_at": func.now(),
             },
         )
@@ -45,3 +47,33 @@ def upsert(db: Session, *, values: Mapping[str, Any], overwrite: bool) -> Extrac
         row = get_by_document(db, values["document_id"])
     assert row is not None
     return row
+
+
+def update_grounding(
+    db: Session, document_id: uuid.UUID, *, values: Mapping[str, Any]
+) -> Extraction:
+    """Save a grounding result (and the kept data / counters); the caller commits."""
+    statement = (
+        update(Extraction)
+        .where(Extraction.document_id == document_id)
+        .values(**values, updated_at=func.now())
+        .returning(Extraction)
+    )
+    row = db.execute(statement, execution_options={"populate_existing": True}).scalar_one()
+    return row
+
+
+def grounding_totals(db: Session, *, since: datetime | None = None) -> Row[Any]:
+    """Grounded extractions, values checked / grounded, and how many needed a retry."""
+    report = Extraction.grounding["report"]
+    query = select(
+        func.count(Extraction.id),
+        func.coalesce(func.sum(report["checked"].astext.cast(Integer)), 0),
+        func.coalesce(func.sum(report["grounded"].astext.cast(Integer)), 0),
+        func.count(Extraction.id).filter(
+            Extraction.grounding["grounding_retries"].astext.cast(Integer) > 0
+        ),
+    ).where(Extraction.grounding.is_not(None))
+    if since is not None:
+        query = query.where(Extraction.updated_at >= since)
+    return db.execute(query).one()

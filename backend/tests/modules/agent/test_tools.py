@@ -20,6 +20,8 @@ from app.modules.agent.tools import (
     compose_summary,
     missing_issues,
 )
+from app.modules.guardrails import service as guardrails_service
+from app.modules.text_extraction.schema import ExtractionMethod
 from app.modules.validation.schema import (
     IssueCode,
     Severity,
@@ -27,8 +29,13 @@ from app.modules.validation.schema import (
     ValidationReport,
     ValidationStatus,
 )
-from tests.modules.agent.conftest import SUMMARY, MakeDocument, invoice, unknown_document
-from tests.modules.text_extraction import samples
+from tests.modules.agent.conftest import (
+    INVOICE_LINES,
+    SUMMARY,
+    MakeDocument,
+    invoice,
+    unknown_document,
+)
 
 
 def _context(
@@ -71,9 +78,12 @@ def ctx(
 
 
 def _with_invoice(ctx: DocumentToolContext, **overrides: Any) -> DocumentToolContext:
-    """Skip the extraction tools: state as if both ran in this run."""
+    """Skip the extraction and grounding tools: state as if they ran in this run."""
     ctx.text_done = True
     ctx.structured = invoice(**overrides)
+    ctx.grounding = guardrails_service.check_grounding(
+        ctx.structured, "\n".join(INVOICE_LINES), ExtractionMethod.PDF_PARSER
+    )
     return ctx
 
 
@@ -102,12 +112,13 @@ DUE_ERROR = _issue(
 # -- Definitions ----------------------------------------------------------------------
 
 
-def test_the_five_tools_are_registered_with_strict_schemas(ctx: DocumentToolContext) -> None:
+def test_the_six_tools_are_registered_with_strict_schemas(ctx: DocumentToolContext) -> None:
     definitions = [tool.definition() for tool in build_document_tools(ctx)]
 
     assert [d["function"]["name"] for d in definitions] == [
         "extract_text",
         "extract_structured_data",
+        "check_grounding",
         "validate_invoice",
         "convert_currency",
         "generate_summary",
@@ -117,7 +128,7 @@ def test_the_five_tools_are_registered_with_strict_schemas(ctx: DocumentToolCont
         assert definition["function"]["strict"] is True
         assert parameters["additionalProperties"] is False
         assert parameters["required"] == list(parameters["properties"])
-    assert "MYR" in definitions[3]["function"]["description"]
+    assert "MYR" in definitions[4]["function"]["description"]
 
 
 # -- Results and guards ----------------------------------------------------------------
@@ -163,7 +174,12 @@ def test_validate_invoice_returns_the_report(ctx: DocumentToolContext) -> None:
 
     assert result["status"] == "pass"
     assert ctx.validation is not None
-    assert result == ctx.validation.model_dump(mode="json")
+    assert ctx.confidence is not None and ctx.confidence.needs_review is False
+    assert result == {
+        **ctx.validation.model_dump(mode="json"),
+        "needs_review": False,
+        "review_fields": [],
+    }
 
 
 def test_generate_summary_refuses_until_validate_invoice_has_run(ctx: DocumentToolContext) -> None:
@@ -283,10 +299,12 @@ def test_the_summary_call_gets_the_data_and_report_but_no_raw_text(
         "validation",
         "conversion",
         "base_currency",
+        "review",
     }
+    assert payload["review"] == []
     assert payload["structured_data"]["total_amount"] == "123.45"
     assert payload["conversion"]["to_currency"] == "MYR"
-    assert samples.INVOICE_LINES[2] not in call.messages[1]["content"]
+    assert all(line not in call.messages[1]["content"] for line in INVOICE_LINES[2:])
 
 
 def test_a_summary_that_misses_an_issue_is_retried_once(ctx: DocumentToolContext) -> None:

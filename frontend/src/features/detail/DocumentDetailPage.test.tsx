@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { apiError, mockApi, ok } from "../../test/fetchMock.ts";
 import {
   DOC_ID,
+  makeConfidence,
   makeDocument,
   makeInvoice,
   makeResult,
@@ -280,5 +281,59 @@ describe("Reprocess", () => {
 
     expect(await screen.findByText("Already processing")).toBeInTheDocument();
     expect(screen.getByText("Processing your document")).toBeInTheDocument();
+  });
+});
+
+describe("DocumentDetailPage — guardrails (feature 0008)", () => {
+  function guardedRoutes() {
+    return {
+      ...completedRoutes(),
+      [`GET /documents/${DOC_ID}/result`]: ok(makeResult({ confidence: makeConfidence() })),
+    };
+  }
+
+  it("shows the overall chip, the needs-review banner and per-field badges", async () => {
+    mockApi(guardedRoutes());
+    renderApp(PATH);
+
+    await screen.findByText(/an invoice from Brightlane Logistics/);
+    expect(screen.getByText(/Low confidence ·/)).toHaveTextContent("Low confidence · 55%");
+    expect(screen.getByText("Needs review")).toBeInTheDocument();
+    expect(screen.getAllByText("Not found in document").length).toBeGreaterThan(0);
+    const vendor = document.getElementById("issue-target-vendor");
+    expect(vendor).not.toBeNull();
+    expect(within(vendor as HTMLElement).getByText("Low")).toBeInTheDocument();
+    const invoiceNumber = document.getElementById("issue-target-invoice_number") as HTMLElement;
+    // High is an icon (distinct shape) with its label for screen readers and in the tooltip.
+    expect(within(invoiceNumber).getByText(/High confidence, 100%/)).toHaveClass("sr-only");
+    expect(within(invoiceNumber).queryByText("High")).not.toBeInTheDocument();
+    expect(within(invoiceNumber).getByTitle(/High confidence \(100%\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/Confidence not available/)).not.toBeInTheDocument();
+  });
+
+  it("shows a value in the raw text when asked", async () => {
+    mockApi(guardedRoutes());
+    const user = userEvent.setup();
+    renderApp(PATH);
+
+    const button = await screen.findByRole("button", { name: "Show Invoice number in the raw text (page 1)" });
+    await user.click(button);
+
+    const match = await waitFor(() => {
+      const mark = document.querySelector("mark");
+      expect(mark).not.toBeNull();
+      return mark as HTMLElement;
+    });
+    expect(match).toHaveTextContent("BL-88731");
+    expect(document.querySelector("#raw-text details")).toHaveProperty("open", true);
+  });
+
+  it("says confidence is not available for results from before 0008", async () => {
+    mockApi(completedRoutes());
+    renderApp(PATH);
+
+    expect(await screen.findByText(/Confidence not available for this result/)).toBeInTheDocument();
+    expect(screen.queryByText("Needs review")).not.toBeInTheDocument();
+    expect(screen.queryByText(/confidence ·/)).not.toBeInTheDocument();
   });
 });

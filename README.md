@@ -10,9 +10,11 @@ searchable with pgvector.
 > document and the **Document Agent** extracts its text (PDF parser or OpenAI vision),
 > turns it into structured JSON, validates it with deterministic code, converts a foreign
 > total to `BASE_CURRENCY` when needed, and writes a summary that mentions every validation
-> problem. The web UI (`0006`) and observability (`0007`: a token ledger, per-document traces
-> and a metrics page) are in place; the other bonus tasks land in later numbered features; see
-> [`docs/product-roadmap.md`](docs/product-roadmap.md).
+> problem. The web UI (`0006`), observability (`0007`: a token ledger, per-document traces
+> and a metrics page) and guardrails (`0008`: every extracted value is checked against the
+> document's text, each field and document gets a confidence score, and API errors and
+> invented values are retried) are in place; the other bonus tasks land in later numbered
+> features; see [`docs/product-roadmap.md`](docs/product-roadmap.md).
 
 ## Stack
 
@@ -55,9 +57,15 @@ Open http://localhost:8080 (or http://localhost:5173 in local development).
    The **Trace** card shows where the time and tokens went: processing and queue time, LLM
    calls, tokens and estimated cost, and a timeline of every tool step with the LLM calls made
    in it (pick an earlier run from the menu). Each agent lane shows its own tokens and cost.
+   **Confidence:** every extracted value and line-item cell is marked high (shield icon),
+   medium or low; hover for the score and why. Values that were not found in the document's
+   text say "Not found in document", a **Needs review** banner lists the fields to check, and
+   the text-search button next to a value opens the raw text with that value highlighted.
+   Documents processed before this feature say "Confidence not available"; reprocess them.
 4. **Metrics** — documents, success rate, average / p95 processing time, tokens and estimated
-   cost per document, and LLM usage by model and by purpose, for the last 7 or 30 days or all
-   time.
+   cost per document, LLM usage by model and by purpose, and a **Guardrails** section
+   (average confidence, share needing review, grounding rate, retries and the high / medium /
+   low split), for the last 7 or 30 days or all time.
 
 The header shows the backend's health and a System / Light / Dark theme switch.
 
@@ -76,13 +84,16 @@ The header shows the backend's health and a System / Light / Dark theme switch.
    curl http://localhost:8080/api/documents/<document_id>
    ```
 
-3. Get the result `{document_id, structured_data, validation, conversion, summary}`:
+3. Get the result `{document_id, structured_data, validation, conversion, summary,
+   confidence}` (`confidence`: overall and per-field scores, `needs_review`, and where each
+   value was found in the text):
 
    ```bash
    curl http://localhost:8080/api/documents/<document_id>/result
    ```
 
-4. Optional: see which tools the agent called, in order, with results and timings:
+4. Optional: see which tools the agent called, in order, with results and timings (including
+   `check_grounding`; the grounding report itself is on `GET /documents/<document_id>/extraction`):
 
    ```bash
    curl http://localhost:8080/api/documents/<document_id>/runs
@@ -178,7 +189,9 @@ never touch your development data, and they never call the real OpenAI API.
 One root `.env` (git-ignored) drives Docker Compose and the backend. Every key is
 documented in [`.env.example`](.env.example): OpenAI key and model names, Postgres
 credentials and ports, `AGENT_MODE`, `BASE_CURRENCY` (default `MYR`: totals in another
-currency are converted to it), `AGENT_MAX_STEPS` (default 8 model turns per agent run),
+currency are converted to it), `AGENT_MAX_STEPS` (default 10 model turns per agent run),
+`OPENAI_MAX_RETRIES` (default 2 retries of a rate-limited, timed-out or failed OpenAI call,
+with backoff),
 `MAX_UPLOAD_MB`, `STORAGE_DIR`, and more. `AGENT_MODE=multi` is the default; until the
 multi-agent bonus ships it logs a warning and runs the single Document Agent.
 

@@ -11,7 +11,7 @@ import {
   useRuns,
   useTrace,
 } from "../../api/queries.ts";
-import type { DocumentRead } from "../../api/types.ts";
+import type { AgentResult, DocumentRead } from "../../api/types.ts";
 import { FileIcon } from "../../components/FileIcon.tsx";
 import { StatusBadge } from "../../components/StatusBadge.tsx";
 import { Alert, ErrorAlert } from "../../components/ui/Alert.tsx";
@@ -23,16 +23,18 @@ import { EmptyState } from "../../components/ui/EmptyState.tsx";
 import { Skeleton } from "../../components/ui/Skeleton.tsx";
 import { useAnnounce } from "../../components/ui/announce.ts";
 import { isNetworkError, isNotFound } from "../../lib/errors.ts";
+import type { TextHighlight } from "../../lib/confidence.ts";
 import { fileKind, formatBytes, formatRelative, formatTimestamp } from "../../lib/format.ts";
 import { EMPTY_ISSUE_INDEX, indexIssues } from "../../lib/issues.ts";
 import { useDocumentTitle } from "../../lib/useDocumentTitle.ts";
 import { AgentActivity } from "./AgentActivity.tsx";
+import { NeedsReviewBanner } from "./ConfidenceSummary.tsx";
 import { ConversionCard } from "./ConversionCard.tsx";
 import { IssuesList } from "./IssuesList.tsx";
 import { LineItemsTable } from "./LineItemsTable.tsx";
 import { RawTextSection } from "./RawTextSection.tsx";
 import { ReprocessButton } from "./ReprocessButton.tsx";
-import { StructuredData } from "./StructuredData.tsx";
+import { StructuredData, type LocateHandler } from "./StructuredData.tsx";
 import { SummaryCard } from "./SummaryCard.tsx";
 import { TraceSection } from "./TraceSection.tsx";
 import { splitError } from "./labels.ts";
@@ -151,7 +153,13 @@ function ProcessingBanner() {
   );
 }
 
-function CompletedView({ documentId }: { documentId: string }) {
+/** Why a result shows no badges: unknown documents have none; older runs predate 0008. */
+function confidenceNote(result: AgentResult): string | undefined {
+  if (result.confidence || result.structured_data.document_type === "unknown") return undefined;
+  return "Confidence not available for this result — reprocess the document to compute it.";
+}
+
+function CompletedView({ documentId, onLocate }: { documentId: string; onLocate: LocateHandler }) {
   const result = useResult(documentId, { enabled: true });
   const issues = useMemo(
     () => (result.data ? indexIssues(result.data.validation.issues) : EMPTY_ISSUE_INDEX),
@@ -169,13 +177,21 @@ function CompletedView({ documentId }: { documentId: string }) {
   if (result.isError) return <ErrorAlert error={result.error} onRetry={() => void result.refetch()} />;
 
   const data = result.data.structured_data;
+  const confidence = result.data.confidence ?? null;
   return (
     <div className="space-y-6">
+      {confidence && <NeedsReviewBanner report={confidence} onLocate={onLocate} />}
       <SummaryCard result={result.data} />
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-3">
         <div className="min-w-0 space-y-6 lg:col-span-2">
-          <StructuredData data={data} issues={issues} />
-          <LineItemsTable data={data} issues={issues} />
+          <StructuredData
+            data={data}
+            issues={issues}
+            confidence={confidence}
+            confidenceNote={confidenceNote(result.data)}
+            onLocate={onLocate}
+          />
+          <LineItemsTable data={data} issues={issues} confidence={confidence} onLocate={onLocate} />
         </div>
         <div className="min-w-0 space-y-6 lg:sticky lg:top-24">
           <IssuesList report={result.data.validation} currency={data.currency} />
@@ -228,6 +244,8 @@ export default function DocumentDetailPage() {
   const latestTrace = useTrace(id, undefined, { live });
   const announce = useAnnounce();
   const [alreadyProcessing, setAlreadyProcessing] = useState(false);
+  const [highlight, setHighlight] = useState<TextHighlight | null>(null);
+  const locate: LocateHandler = (span) => setHighlight({ ...span, nonce: Date.now() });
   useRefreshOnFinish(id, status);
   useDocumentTitle(document.data?.filename ?? (document.isError ? "Document not found" : "Document"));
 
@@ -288,7 +306,7 @@ export default function DocumentDetailPage() {
       )}
 
       {doc.status === "processing" && <ProcessingBanner />}
-      {doc.status === "completed" && <CompletedView documentId={doc.document_id} />}
+      {doc.status === "completed" && <CompletedView documentId={doc.document_id} onLocate={locate} />}
       {doc.status === "failed" && <FailedView document={doc} />}
 
       <div className="mt-6 space-y-6">
@@ -309,7 +327,7 @@ export default function DocumentDetailPage() {
           runId={traceRunId}
           onRunChange={setTraceRunId}
         />
-        {doc.status !== "processing" && <RawTextSection documentId={doc.document_id} />}
+        {doc.status !== "processing" && <RawTextSection documentId={doc.document_id} highlight={highlight} />}
       </div>
     </>
   );

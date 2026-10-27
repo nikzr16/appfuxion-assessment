@@ -6,6 +6,7 @@ import { Badge } from "../../components/ui/Badge.tsx";
 import { Card } from "../../components/ui/Card.tsx";
 import { EMPTY, formatDate, formatMoney } from "../../lib/format.ts";
 import { countBySeverity } from "../../lib/issues.ts";
+import { ConfidenceChip } from "./ConfidenceSummary.tsx";
 import { DOCUMENT_TYPE_LABELS, VALIDATION_STATUS } from "./labels.ts";
 
 function Fact({
@@ -54,6 +55,7 @@ export function SummaryCard({ result }: { result: AgentResult }) {
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone="neutral">{DOCUMENT_TYPE_LABELS[data.document_type]}</Badge>
             <Badge tone={status.tone}>Validation: {status.label}</Badge>
+            {result.confidence && <ConfidenceChip report={result.confidence} />}
           </div>
         </div>
         <p className="mt-3 max-w-3xl text-[0.95rem] leading-relaxed text-fg">{result.summary}</p>

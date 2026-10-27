@@ -7,6 +7,8 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema, field_validator
 
+from app.modules.guardrails.schema import ExtractionGrounding
+
 _CURRENCY_CODE = re.compile(r"[A-Z]{3}")
 
 
@@ -96,6 +98,7 @@ class ExtractionRead(BaseModel):
     attempts: int
     prompt_tokens: int
     completion_tokens: int
+    grounding: ExtractionGrounding | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -108,3 +111,14 @@ class ExtractionResponse(BaseModel):
     model: str
     prompt_version: str
     attempts: int
+    # The grounding report and attempt history (feature 0008); null before it ran.
+    grounding: ExtractionGrounding | None = None
+
+
+class GroundingStats(BaseModel):
+    """Grounded extractions in a window (feature 0008 metrics)."""
+
+    extractions: int
+    values_checked: int
+    values_grounded: int
+    grounding_retry_extractions: int

@@ -1,13 +1,17 @@
 import { ListChecks } from "lucide-react";
 import type { ReactNode } from "react";
 
-import type { InvoiceData, LineItem } from "../../api/types.ts";
+import type { ConfidenceReport, InvoiceData, LineItem } from "../../api/types.ts";
+import { ConfidenceBadge, ShowInTextButton } from "../../components/ConfidenceBadge.tsx";
 import { SEVERITY_STYLE } from "../../components/severity.tsx";
 import { Card, CardBody, CardHeader } from "../../components/ui/Card.tsx";
 import { cx } from "../../lib/cx.ts";
 import { EMPTY, formatAmount, formatQuantity } from "../../lib/format.ts";
 import { lineRowId, targetId, worstSeverity, type IssueIndex } from "../../lib/issues.ts";
+import { lineItemPath } from "../../lib/confidence.ts";
 import { IssueMarker } from "./IssueMarker.tsx";
+import { COLUMN_LABELS } from "./labels.ts";
+import type { LocateHandler } from "./StructuredData.tsx";
 
 type Column = keyof LineItem;
 
@@ -16,16 +20,22 @@ function Cell({
   column,
   issues,
   numeric = false,
+  confidence,
+  onLocate,
   children,
 }: {
   index: number;
   column: Column;
   issues: IssueIndex;
   numeric?: boolean;
+  confidence?: ConfidenceReport | null;
+  onLocate?: LocateHandler;
   children: ReactNode;
 }) {
   const cellIssues = issues.forCell(index, column);
   const worst = worstSeverity(cellIssues);
+  const cellConfidence = confidence?.fields[lineItemPath(index, column)];
+  const ungrounded = cellConfidence?.grounding === "ungrounded";
   return (
     <td
       id={worst ? targetId(`line_items[${index}].${column}`) : undefined}
@@ -33,18 +43,39 @@ function Cell({
         "px-3 py-3 align-top",
         numeric && "text-right tabular-nums whitespace-nowrap",
         worst && `rounded-lg ${SEVERITY_STYLE[worst].ring} ring-inset`,
+        !worst && ungrounded && "rounded-lg ring-2 ring-danger/50 ring-inset",
       )}
     >
       <span className={cx("inline-flex items-start gap-1.5", numeric && "justify-end")}>
         {children}
         <IssueMarker issues={cellIssues} />
+        {cellConfidence && <ConfidenceBadge confidence={cellConfidence} compact />}
+        {cellConfidence && onLocate && (
+          <ShowInTextButton
+            confidence={cellConfidence}
+            fieldLabel={`line ${index + 1} ${COLUMN_LABELS[column] ?? column}`}
+            onLocate={onLocate}
+          />
+        )}
       </span>
+      {ungrounded && <span className="mt-1 block text-xs font-medium text-danger">Not found in document</span>}
     </td>
   );
 }
 
 /** Line items with issue rows tinted and issue cells outlined (PRD D8); totals in the footer. */
-export function LineItemsTable({ data, issues }: { data: InvoiceData; issues: IssueIndex }) {
+export function LineItemsTable({
+  data,
+  issues,
+  confidence = null,
+  onLocate,
+}: {
+  data: InvoiceData;
+  issues: IssueIndex;
+  confidence?: ConfidenceReport | null;
+  onLocate?: LocateHandler;
+}) {
+  const guard = { confidence, onLocate };
   const amount = (value: string | null) => formatAmount(value, data.currency);
   const tableIssues = issues.table;
   const worstTable = worstSeverity(tableIssues);
@@ -94,18 +125,18 @@ export function LineItemsTable({ data, issues }: { data: InvoiceData; issues: Is
                   return (
                     <tr key={index} id={lineRowId(index)} className={cx(worst && SEVERITY_STYLE[worst].tint)}>
                       <td className="px-3 py-3 align-top text-fg-subtle tabular-nums">{index + 1}</td>
-                      <Cell index={index} column="description" issues={issues}>
+                      <Cell index={index} column="description" issues={issues} {...guard}>
                         <span className={line.description ? "text-fg" : "text-fg-subtle"}>
                           {line.description ?? EMPTY}
                         </span>
                       </Cell>
-                      <Cell index={index} column="quantity" issues={issues} numeric>
+                      <Cell index={index} column="quantity" issues={issues} numeric {...guard}>
                         {formatQuantity(line.quantity)}
                       </Cell>
-                      <Cell index={index} column="unit_price" issues={issues} numeric>
+                      <Cell index={index} column="unit_price" issues={issues} numeric {...guard}>
                         {amount(line.unit_price)}
                       </Cell>
-                      <Cell index={index} column="amount" issues={issues} numeric>
+                      <Cell index={index} column="amount" issues={issues} numeric {...guard}>
                         <span className="font-medium text-fg">{amount(line.amount)}</span>
                       </Cell>
                     </tr>

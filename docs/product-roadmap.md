@@ -74,7 +74,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | PRD | Module | Status | Notes |
 |---|---|---|---|
 | `docs/prd/0007-observability-prd.md` | `modules/observability` | shipped | B1 — token ledger, traces, metrics; CI run #24 green (2026-10-27) |
-| *planned* 0008 | `modules/guardrails` | planned | B2 — grounding, confidence, retry |
+| `docs/prd/0008-guardrails-prd.md` | `modules/guardrails` | in progress | B2 — grounding check, confidence scoring, retries; PRD final (2026-10-27) |
 | *planned* 0009 | `modules/vision` | planned | B5 — tables, layout, multimodal |
 | *planned* 0010 | `modules/retrieval` + Query Agent | planned | B3 — pgvector |
 | *planned* 0011 | `modules/agent` (multi-agent) | planned | B4 — last, reuses every tool |
@@ -94,7 +94,7 @@ PRD yet; their numbers are expectations from the local feature map.
 |---|---|---|---|
 | Docker Compose (full stack) | 0000 | 0006 | db + backend + frontend run with one command |
 | CI (GitHub Actions) | 0000 | each feature | backend + frontend jobs green |
-| LLM client (tokens, fakes, retries) | 0000 | 0007, 0008 | client seam + FakeLLM + token capture; every call measured and recorded through a hook (0007) |
+| LLM client (tokens, fakes, retries) | 0000 | 0007, 0008 | client seam + FakeLLM + token capture; every call measured and recorded through a hook (0007); transient-error retries with backoff + jitter in the seam, one ledger row per attempt (0008) |
 | Persistence (Postgres + pgvector, Alembic) | 0000 | 0010 | Postgres 18, pgvector enabled by baseline migration |
 | Observability | 0000 (logging) | 0007 | `llm_calls` token ledger with estimated cost, `/trace` + `/metrics/summary`, Trace card + Metrics page; JSON logs carry `document_id`, `run_id`, `agent`, `purpose` |
 | ENGINEERING_NOTES.md | 0000 (stub) | every feature | stub with architecture decisions |
@@ -111,6 +111,7 @@ PRD yet; their numbers are expectations from the local feature map.
 | `docs/prd/0005-agent-prd.md` | 1 | agent | shipped |
 | `docs/prd/0006-frontend-prd.md` | 2 | frontend | shipped |
 | `docs/prd/0007-observability-prd.md` | 3 | observability | shipped |
+| `docs/prd/0008-guardrails-prd.md` | 3 | guardrails | in progress |
 
 ## Prioritization Log
 

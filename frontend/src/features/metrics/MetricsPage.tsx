@@ -21,6 +21,7 @@ import {
 } from "../../lib/format.ts";
 import { purposeLabel } from "../../lib/trace.ts";
 import { useDocumentTitle } from "../../lib/useDocumentTitle.ts";
+import { GuardrailsSection } from "./GuardrailsSection.tsx";
 
 type Window = "7" | "30" | "all";
 
@@ -216,7 +217,7 @@ export default function MetricsPage() {
     <>
       <PageHeader
         title="Metrics"
-        description="How documents are processed: success rate, processing time, LLM tokens and estimated cost."
+        description="How documents are processed: success rate, processing time, extraction quality, LLM tokens and estimated cost."
         actions={<Tabs label="Time window" options={WINDOWS} value={range} onChange={onWindowChange} />}
       />
 
@@ -239,6 +240,7 @@ export default function MetricsPage() {
       ) : data ? (
         <div className="space-y-6" aria-busy={metrics.isFetching}>
           <Tiles data={data} />
+          {data.guardrails && <GuardrailsSection data={data.guardrails} />}
           <div className="space-y-6">
             <UsageTable
               id="metrics-by-model"

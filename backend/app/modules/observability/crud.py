@@ -84,3 +84,9 @@ def per_run_totals(db: Session, run_ids: Sequence[uuid.UUID]) -> Sequence[Row[An
 
 def earliest_started_at(db: Session) -> datetime | None:
     return db.execute(select(func.min(LlmCall.started_at))).scalar_one()
+
+
+def count_retries(db: Session, *, since: datetime | None = None) -> int:
+    """Ledger rows that were a transient-error retry (feature 0008)."""
+    query = select(func.count()).select_from(LlmCall).where(LlmCall.attempt > 1)
+    return int(db.execute(_since(query, since)).scalar_one())

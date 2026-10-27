@@ -33,40 +33,46 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   │   │   ├── config.py           # pydantic-settings Settings, get_settings()
 │   │   │   ├── db.py               # engine, SessionLocal, Base, get_db
 │   │   │   ├── llm.py              # LLMClient, OpenAILLMClient, FakeLLM, TokenUsage, LLMResponse (parsed, refusal);
-│   │   │   │                       # Purpose / Agent labels, LLMCallRecord, register_llm_recorder, one `llm.call` log per call
+│   │   │   │                       # Purpose / Agent labels, LLMCallRecord, register_llm_recorder, one `llm.call` log per call;
+│   │   │   │                       # transient-error retries (_classify, _with_retries, backoff + jitter; SDK retries off)
 │   │   │   ├── storage.py          # Storage protocol, LocalStorage (save, save_as), get_storage
-│   │   │   ├── errors.py           # AppError hierarchy (incl. ConflictError 409, LLMOutputError) + handlers (app, HTTP, request validation)
+│   │   │   ├── errors.py           # AppError hierarchy (incl. ConflictError 409, LLMError retryable / retry_after, LLMOutputError) + handlers
 │   │   │   └── logging.py          # JSON formatter; trace context vars (document_id, run_id, agent, purpose,
 │   │   │                           # prompt_version, step_index), bind_document_id, bind_trace, trace_labels
 │   │   └── modules/
 │   │       ├── health/             # router.py, service.py, schema.py
 │   │       ├── documents/          # model, crud, schema, service, router, pipeline (hook + register_pipeline_runner)
 │   │       ├── text_extraction/    # model, crud, schema, service (render lock), router, prompts (PDF parser + vision)
-│   │       ├── structured_extraction/  # model, crud, schema (InvoiceData), service, router, prompts
-│   │       ├── validation/         # pure: schema (report, issue codes), service (validate_invoice, convert_currency), currencies (data)
-│   │       ├── agent/              # model, crud, schema, service, router, prompts, runner (AgentRunner), tools (5 document tools)
+│   │       ├── structured_extraction/  # model, crud, schema (InvoiceData), service (extract + ground_extraction), router, prompts
+│   │       ├── validation/         # pure: schema (report, issue codes), service (validate_invoice, convert_currency, expected_fields), currencies (data)
+│   │       ├── guardrails/         # pure (0008): schema (grounding + confidence DTOs), service (check_grounding,
+│   │       │                       # score_confidence), matching (normalisation, number / date / identifier / text / currency matchers)
+│   │       ├── agent/              # model, crud, schema, service, router, prompts, runner (AgentRunner), tools (6 document tools)
 │   │       ├── observability/      # model (llm_calls), crud, schema, service (recorder, trace, metrics), router, pricing
 │   │       └── client_config/      # router, service, schema: GET /api/config (no DB)
 │   ├── migrations/
 │   │   ├── env.py                  # URL from settings, metadata from app.models
 │   │   ├── script.py.mako
 │   │   └── versions/               # 0001_enable_pgvector.py, 0002_create_documents.py, 0003_create_document_texts.py,
-│   │                               # 0004_create_extractions.py, 0005_create_agent_runs.py, 0006_create_llm_calls.py
+│   │                               # 0004_create_extractions.py, 0005_create_agent_runs.py, 0006_create_llm_calls.py,
+│   │                               # 0007_guardrails.py (grounding, confidence and attempt columns)
 │   ├── tests/
-│   │   ├── conftest.py             # test DB, migrate once, client / fake_llm / storage fixtures, no-op pipeline and
-│   │   │                           # no LLM recorder by default (opt in: agent_pipeline, llm_recorder)
-│   │   ├── core/                   # test_llm, test_storage, test_errors, test_logging
+│   │   ├── conftest.py             # test DB, migrate once, client / fake_llm / storage fixtures, no-op pipeline,
+│   │   │                           # no LLM recorder by default (opt in: agent_pipeline, llm_recorder), retry_waits (no backoff sleep)
+│   │   ├── core/                   # test_llm, test_llm_retries, test_storage, test_errors, test_logging
 │   │   ├── modules/health/         # test_router, test_service
 │   │   ├── modules/documents/      # conftest (byte samples, pipeline spy), test_router, test_service
 │   │   ├── modules/text_extraction/  # conftest (make_document), samples (PDF/image builders), test_router, test_service, test_render_lock
-│   │   ├── modules/structured_extraction/  # conftest (make_document with text, invoice()), test_schema, test_service, test_router
+│   │   ├── modules/structured_extraction/  # conftest (make_document with text, invoice()), test_schema, test_service, test_grounding, test_router
+│   │   ├── modules/guardrails/     # test_matching, test_service, test_layering
 │   │   ├── modules/validation/     # conftest (make_invoice(), line(), TODAY), test_validate_invoice, test_convert_currency, test_currencies, test_schema, test_layering
-│   │   ├── modules/agent/          # conftest (tool_turn, text_turn, happy_script, agent_pipeline), test_runner, test_tools, test_service, test_router
+│   │   ├── modules/agent/          # conftest (tool_turn, text_turn, happy_script, invoice_pdf, agent_pipeline), test_runner, test_tools,
+│   │   │                           # test_service, test_router, test_guardrails
 │   │   ├── modules/observability/  # conftest (reuses agent fixtures), test_pricing, test_service, test_router, test_layering
 │   │   ├── modules/client_config/  # test_router, test_service
 │   │   └── test_app.py, test_config.py, test_migrations.py
 │   ├── alembic.ini
-│   ├── pyproject.toml              # deps (pdfplumber, pypdfium2, pillow, pycountry; dev: reportlab), ruff, pytest config
+│   ├── pyproject.toml              # deps (pdfplumber, pypdfium2, pillow, pycountry, rapidfuzz; dev: reportlab), ruff, pytest config
 │   ├── uv.lock
 │   ├── .python-version             # 3.12
 │   ├── Dockerfile
@@ -77,7 +83,8 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   ├── src/
 │   │   ├── main.tsx                # Poppins (Latin), QueryClientProvider, createBrowserRouter
 │   │   ├── App.tsx                 # route table: / (Upload), /documents, /documents/:id, /metrics, * (not found)
-│   │   ├── index.css               # Tailwind, `.dark` variant, semantic colour tokens (light + dark, incl. trace series), base styles
+│   │   ├── index.css               # Tailwind, `.dark` variant, semantic colour tokens (light + dark, incl. trace series,
+│   │   │                           # highlight and the validated confidence-split colours), base styles
 │   │   ├── api/
 │   │   │   ├── client.ts           # request(), ApiError (network_error for failed fetch), one function per endpoint (+ test)
 │   │   │   ├── types.ts            # DTO types mirroring the backend schemas (money/dates as strings)
@@ -85,6 +92,7 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   │   ├── lib/                    # pure logic, each with a test: format (money/dates/sizes), issues (path → target),
 │   │   │                           # agents (tool → role lanes), trace (timeline rows, bar geometry, usage per lane),
 │   │   │                           # upload (client checks, MAX_FILES 5), errors (friendly text),
+│   │   │                           # confidence (labels, score format, highlight spans),
 │   │   │                           # theme, cx, useDocumentTitle
 │   │   ├── components/
 │   │   │   ├── ui/                 # Button (+ buttonClasses), Badge, Card, Alert/ErrorAlert, Dialog (native <dialog>),
@@ -92,6 +100,8 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   │   │   ├── layout/             # AppLayout (header, nav, skip link, footer, focus on navigation), ThemeToggle (+ test)
 │   │   │   ├── HealthBadge.tsx     # compact backend status in the header (+ test)
 │   │   │   ├── StatusBadge.tsx, severity.tsx, FileIcon.tsx, PageHeader.tsx
+│   │   │   ├── ConfidenceBadge.tsx  # ConfidenceBadge (pill / icon), NotFoundMarker, ShowInTextButton (0008)
+│   │   │   ├── confidenceStyle.ts   # high / medium / low: tone, icon, text colour
 │   │   ├── features/
 │   │   │   ├── upload/             # UploadPage, DropZone, UploadQueue, useUploadQueue (two uploads at a time) (+ page test)
 │   │   │   ├── documents/          # DocumentsPage (URL filter/page, polling), DocumentsTable (table ≥ sm, cards < sm) (+ test)
@@ -99,8 +109,10 @@ Docker, and CI. Each backend feature adds a folder under `backend/app/modules/`.
 │   │   │   │                       # StructuredData, LineItemsTable, IssuesList, IssueMarker, ConversionCard,
 │   │   │   │                       # RawTextSection (lazy), AgentActivity + AgentLanes (multi-agent view, tokens per lane),
 │   │   │   │                       # TraceSection + TraceTimeline (0007 waterfall), ReprocessButton (confirm dialog),
+│   │   │   │                       # ConfidenceSummary (0008: overall chip, Needs review banner),
 │   │   │   │                       # labels (+ page and TraceSection tests)
-│   │   │   └── metrics/            # MetricsPage (/metrics: KPI tiles, by model / by purpose, ?days= window) (+ test)
+│   │   │   └── metrics/            # MetricsPage (/metrics: KPI tiles, Guardrails section, by model / by purpose,
+│   │   │                           # ?days= window) (+ test), GuardrailsSection (0008, confidence split bar)
 │   │   ├── pages/NotFoundPage.tsx
 │   │   └── test/                   # setup (jsdom polyfills), fetchMock (route-based fetch stub), fixtures, render (whole app)
 │   ├── vite.config.ts              # React + Tailwind plugins, /api dev proxy, Vitest config
@@ -129,12 +141,12 @@ forward `/api` to the backend.
 | GET | `/api/documents/{document_id}` | `documents` | 200 `DocumentRead`; 404 unknown id; 422 id not a UUID |
 | GET | `/api/documents` | `documents` | `?limit=1..100 (20)&offset=0&status=` → 200 `DocumentList`, newest first |
 | GET | `/api/documents/{document_id}/text` | `text_extraction` | 200 `DocumentTextResponse` once text exists (any document status); 404 unknown id; 422 id not a UUID; 409 `text_not_ready` (still `processing`) / `text_unavailable` (`completed` / `failed`, message includes the document's error). Read-only: never starts an extraction or calls OpenAI |
-| GET | `/api/documents/{document_id}/extraction` | `structured_extraction` | 200 `ExtractionResponse` once structured data exists (any document status); 404 unknown id; 422 id not a UUID; 409 `extraction_not_ready` (still `processing`) / `extraction_unavailable` (`completed` / `failed`, message includes the document's error). Read-only: never extracts or calls OpenAI |
-| GET | `/api/documents/{document_id}/result` | `agent` | 200 `AgentResult` when `completed` (latest completed run); 409 `result_not_ready` (`processing`) / `result_unavailable` (`failed`, message includes the document's error); 404; 422. Read-only |
+| GET | `/api/documents/{document_id}/extraction` | `structured_extraction` | 200 `ExtractionResponse` once structured data exists (any document status); 404 unknown id; 422 id not a UUID; 409 `extraction_not_ready` (still `processing`) / `extraction_unavailable` (`completed` / `failed`, message includes the document's error). Read-only: never extracts or calls OpenAI. Includes `grounding` (0008; null until checked) |
+| GET | `/api/documents/{document_id}/result` | `agent` | 200 `AgentResult` (incl. `confidence`, 0008) when `completed` (latest completed run); 409 `result_not_ready` (`processing`) / `result_unavailable` (`failed`, message includes the document's error); 404; 422. Read-only |
 | POST | `/api/documents/{document_id}/reprocess` | `agent` | 202 `DocumentUploadResponse` (`processing`) and a background agent run with forced re-extraction; 409 `already_processing`; 404; 422; 502 `llm_not_configured` |
 | GET | `/api/documents/{document_id}/runs` | `agent` | 200 `AgentRunRead[]`, newest first, each with its tool-call `steps`; 404; 422 |
 | GET | `/api/documents/{document_id}/trace` | `observability` | `?run_id=` (default: latest run) → 200 `DocumentTrace`; 404 `not_found` (document) / `run_not_found` (run not of this document); 422 non-UUID. A document with no run yet → `run: null`, `spans: []`. Read-only |
-| GET | `/api/metrics/summary` | `observability` | `?days=1..365` (default: all time) → 200 `MetricsSummary`, computed live; 422 out of range |
+| GET | `/api/metrics/summary` | `observability` | `?days=1..365` (default: all time) → 200 `MetricsSummary` (incl. `guardrails`, 0008), computed live; 422 out of range |
 | GET | `/api/config` | `client_config` | 200 `ClientConfig` — public settings for the UI; no secrets, no DB |
 | GET | `/api/docs` | FastAPI | Swagger UI (`/api/openapi.json` for the schema) |
 
@@ -156,8 +168,15 @@ forward `/api` to the backend.
 | `DocumentType` | `structured_extraction` | `invoice` \| `receipt` \| `unknown` |
 | `LineItem` | `structured_extraction` | `description`, `quantity`, `unit_price`, `amount` — all required, nullable; numbers are `Decimal` |
 | `InvoiceData` (LLM output + 0004 input) | `structured_extraction` | `document_type`, `vendor`, `vendor_address`, `vendor_tax_id`, `customer_name`, `customer_address`, `invoice_number`, `invoice_date: date`, `due_date: date`, `payment_terms`, `currency` (3 upper-case letters), `subtotal`, `tax`, `total_amount` (`Decimal`), `line_items: LineItem[]`. Strict structured-output schema: every field required + nullable, `additionalProperties: false`, money as JSON `number`; blank text → null. In JSON (DB, API) money is a decimal string and dates are `YYYY-MM-DD` |
-| `ExtractionRead` (internal) | `structured_extraction` | every `extractions` column, `data: InvoiceData` |
-| `ExtractionResponse` | `structured_extraction` | `document_id: UUID`, `structured_data: InvoiceData`, `model`, `prompt_version`, `attempts` |
+| `ExtractionRead` (internal) | `structured_extraction` | every `extractions` column, `data: InvoiceData`, `grounding: ExtractionGrounding \| null` |
+| `ExtractionResponse` | `structured_extraction` | `document_id: UUID`, `structured_data: InvoiceData`, `model`, `prompt_version`, `attempts`, `grounding: ExtractionGrounding \| null` (0008) |
+| `GroundingStats` (internal) | `structured_extraction` | `extractions`, `values_checked`, `values_grounded`, `grounding_retry_extractions` — for metrics |
+| `GroundingStatus` / `ValueKind` / `MatchKind` | `guardrails` | `grounded \| weak \| ungrounded \| inferred \| skipped` / `number \| date \| identifier \| text \| currency \| classification` / `exact \| number \| date \| identifier \| fuzzy \| symbol \| ocr` |
+| `FieldGrounding` | `guardrails` | `path` (`vendor`, `line_items[2].amount`), `value` (as checked), `kind`, `status`, `match`, `similarity` (fuzzy 0–100), `page`, `start` / `end` (offsets into `raw_text`), `note` |
+| `GroundingReport` | `guardrails` | `method`, `checked`, `grounded`, `weak`, `ungrounded`, `inferred`, `fields: FieldGrounding[]` (schema order; nulls absent) |
+| `ExtractionGrounding` | `guardrails` | `report` (kept attempt), `kept_attempt`, `grounding_retries`, `attempts: {attempt, reason: initial \| schema \| grounding, valid, ungrounded[]}[]`, `checked_at` — stored in `extractions.grounding` |
+| `FieldConfidence` | `guardrails` | `path`, `score` (0–1, 3 decimals), `label: high \| medium \| low`, `grounding`, `page`, `start`, `end`, `reasons[]` |
+| `ConfidenceReport` | `guardrails` | `overall`, `label`, `needs_review`, `review_fields[]` (key fields first), `components {fields, completeness, validation}`, `fields: {path: FieldConfidence}` — `AgentResult.confidence` |
 | `Severity` | `validation` | `error` \| `warning` \| `info` |
 | `ValidationStatus` | `validation` | `pass` \| `warn` \| `fail` — any error → `fail`; else any warning → `warn`; else `pass` (info never counts) |
 | `IssueCode` | `validation` | stable catalogue, see "Validation issue codes" below |
@@ -166,23 +185,26 @@ forward `/api` to the backend.
 | `ConversionResult` | `validation` | `original_amount`, `from_currency`, `to_currency`, `rate` (10 significant digits), `converted_amount` (half-up to target minor units), `rate_date: date`, `source` |
 | `AgentMode` / `RunTrigger` / `RunStatus` / `StepStatus` | `agent` | `single \| multi` / `upload \| reprocess` / `running \| completed \| failed` / `ok \| error` |
 | `ToolStep` | `agent` | `index`, `turn` (model turn, 1-based), `tool`, `arguments`, `status`, `result` (exactly what the model was sent; never raw text), `error: {code, message} \| null`, `duration_ms`, `started_at` |
-| `AgentResult` | `agent` | `document_id`, `structured_data: InvoiceData`, `validation: ValidationReport`, `conversion: ConversionResult \| null`, `summary` — body of `GET /result`, stored in `agent_runs.result` |
+| `AgentResult` | `agent` | `document_id`, `structured_data: InvoiceData`, `validation: ValidationReport`, `conversion: ConversionResult \| null`, `summary`, `confidence: ConfidenceReport \| null` (0008; null for unknown documents and older results) — body of `GET /result`, stored in `agent_runs.result` |
 | `AgentRunRead` | `agent` | every `agent_runs` column except `result` |
 | `UsageTotals` | `observability` | `llm_calls`, `failed_calls`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost_usd: Decimal \| null` (sum of known costs; 0 with no calls; null when calls exist but none is priced), `cost_complete` (false when some model is unpriced) |
 | `GroupTotals` | `observability` | `UsageTotals` + `key` (purpose, agent or model), `avg_latency_ms` |
 | `TraceRun` | `observability` | `run_id`, `mode`, `trigger`, `status`, `error_code`, `error`, `started_at`, `finished_at`, `queue_ms` (upload runs only: upload → run start), `processing_ms` (null while running), `run_prompt_tokens`, `run_completion_tokens` (0005 run totals) |
 | `ToolSpan` | `observability` | `kind: "tool"`, `step_index`, `turn`, `tool`, `status`, `error_code`, `started_at`, `offset_ms` (from run start), `duration_ms` |
-| `LLMSpan` | `observability` | `kind: "llm"`, `id`, `step_index` (null for agent-loop turns), `purpose`, `agent`, `model`, `prompt_version`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost_usd`, `status: ok \| error`, `error_code`, `started_at`, `offset_ms`, `duration_ms` |
+| `LLMSpan` | `observability` | `kind: "llm"`, `id`, `step_index` (null for agent-loop turns), `purpose`, `agent`, `model`, `prompt_version`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost_usd`, `status: ok \| error`, `error_code`, `started_at`, `offset_ms`, `duration_ms`, `attempt` (1 = first try; 2+ = transient retry, 0008) |
 | `DocumentTrace` | `observability` | `document_id`, `uploaded_at`, `run: TraceRun \| null`, `llm_calls_recorded` (false for runs before 0007), `totals: UsageTotals`, `by_purpose` / `by_agent: GroupTotals[]` (timeline order), `spans: (ToolSpan \| LLMSpan)[]` (start order; a step before the calls made in it), `prices_as_of` |
-| `MetricsSummary` | `observability` | `window_days`, `since`, `generated_at`, `ledger_since` (earliest ledger row), `documents {total, processing, completed, failed, success_rate}`, `runs: RunStats`, `llm` (`UsageTotals` + `error_rate`, `documents_with_usage`, `avg_tokens_per_document`, `avg_cost_per_document` over completed runs that have ledger rows), `by_model` / `by_purpose: GroupTotals[]` (most tokens first), `prices_as_of` |
+| `MetricsSummary` | `observability` | `window_days`, `since`, `generated_at`, `ledger_since` (earliest ledger row), `documents {total, processing, completed, failed, success_rate}`, `runs: RunStats`, `llm` (`UsageTotals` + `error_rate`, `documents_with_usage`, `avg_tokens_per_document`, `avg_cost_per_document` over completed runs that have ledger rows), `by_model` / `by_purpose: GroupTotals[]` (most tokens first), `guardrails` (0008: `runs_scored`, `avg_confidence`, `by_label`, `needs_review`, `needs_review_rate`, `values_checked`, `values_grounded`, `grounding_rate`, `grounding_retry_extractions`, `transient_retries`), `prices_as_of` |
+| `ConfidenceStats` (internal) | `agent` | `runs_scored`, `avg_confidence`, `needs_review`, `by_label` — `agent.service.confidence_stats` |
 | `RunStats` | `agent` | `total`, `running`, `completed`, `failed`, `avg_ms`, `p50_ms`, `p95_ms` (completed runs; `percentile_cont`) — `agent.service.run_stats`, part of `MetricsSummary` |
 | `DocumentCounts` (internal) | `documents` | `processing`, `completed`, `failed` — `documents.service.count_by_status` |
-| `LLMCallRecord` (internal) | `core/llm.py` | `kind: chat \| embedding`, `model`, `usage`, `latency_ms`, `status`, `error_code`, `started_at`, `labels: TraceLabels` — handed to the registered recorder; never prompts or replies |
+| `LLMCallRecord` (internal) | `core/llm.py` | `kind: chat \| embedding`, `model`, `usage`, `latency_ms`, `status`, `error_code`, `started_at`, `labels: TraceLabels`, `attempt` (0008) — handed to the registered recorder; never prompts or replies |
 | `ClientConfig` | `client_config` | `max_upload_mb: int`, `accepted_content_types: string[]` (sorted; the same set the upload service accepts), `base_currency` |
 | Error body | `core/errors.py` | `{"error": {"code": str, "message": str, "details"?: any}}` — used for `AppError`, framework HTTP errors (404/405) and request validation (422, `details` = field errors) |
 
 Error codes: `not_found` (404), `validation_failed` (422), `unsupported_media_type` (415),
-`payload_too_large` (413), `llm_error` / `llm_not_configured` (502), `llm_invalid_output`
+`payload_too_large` (413), `llm_error` / `llm_not_configured` / `llm_rate_limited` /
+`llm_timeout` / `llm_unavailable` / `llm_quota_exceeded` (502; the first three are retried in
+`app/core/llm.py` before they surface), `llm_invalid_output`
 (502, `LLMOutputError`: a structured reply failed its schema; carries `errors`),
 `run_not_found` (404, trace route),
 `internal_error` (500), `conflict` (409, base) with `text_not_ready` / `text_unavailable` /
@@ -201,7 +223,7 @@ tools before the summary), `agent_max_steps`, `internal_error`, `run_abandoned` 
 `running` row closed by the next run), or the fatal tool error's own code
 (`unreadable_document`, `no_text_found`, `invalid_llm_output`, `llm_refused`, `llm_error`, …).
 Recoverable tool error codes (sent back to the model only): `text_not_extracted`,
-`structured_data_missing`, `validation_required`, `conversion_not_needed`,
+`structured_data_missing`, `grounding_required` (0008), `validation_required`, `conversion_not_needed`,
 `unsupported_currency`, `invalid_amount`, `invalid_arguments`, `unknown_tool`.
 
 ### Validation issue codes
@@ -237,7 +259,7 @@ when the currency is missing or invalid).
 | Engine | PostgreSQL 18 + pgvector (`pgvector/pgvector:pg18-trixie`) |
 | Container / volume | `appfuxion-db` / `appfuxion_pgdata` (mounted at `/var/lib/postgresql`) |
 | Driver | SQLAlchemy 2.0 + psycopg 3 (`postgresql+psycopg://`) |
-| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents`; `0003` creates `document_texts`; `0004` creates `extractions`; `0005` creates `agent_runs`; `0006` creates `llm_calls` |
+| Migrations | `0001` enables `CREATE EXTENSION IF NOT EXISTS vector`; `0002` creates `documents`; `0003` creates `document_texts`; `0004` creates `extractions`; `0005` creates `agent_runs`; `0006` creates `llm_calls`; `0007` adds `extractions.grounding`, `agent_runs.overall_confidence` / `needs_review`, `llm_calls.attempt` |
 | ID rule | Every table's primary key is a native `UUID` (v4, `uuid.uuid4()`), exposed as a plain dashed UUID |
 | Test database | `appfuxion_test` on the same server (created and migrated by `conftest.py`) |
 
@@ -287,9 +309,10 @@ One row per document, written by `structured_extraction.service.extract_structur
 | `document_id` | `UUID` UNIQUE | FK `documents.id`, `ON DELETE CASCADE` |
 | `data` | `JSONB` | `InvoiceData` in JSON mode: money as decimal strings, dates as ISO strings |
 | `model` | `VARCHAR(100)` | Model that answered |
-| `prompt_version` | `VARCHAR(50)` | `structured_extraction.v1` |
-| `attempts` | `INTEGER` | `CHECK >= 1`; 2 when the retry was used |
+| `prompt_version` | `VARCHAR(50)` | `structured_extraction.v2` (0008) |
+| `attempts` | `INTEGER` | `CHECK >= 1`; extraction calls in total (schema + grounding retries, ≤ 3) |
 | `prompt_tokens`, `completion_tokens` | `INTEGER` | `CHECK >= 0`; summed over the replies received (a reply rejected by validation is not counted) |
+| `grounding` | `JSONB` NULL | `ExtractionGrounding` once `check_grounding` ran (0008); reset to NULL when the row is re-extracted |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | `now()` defaults; `updated_at` bumped when `force=True` replaces the row |
 
 Constraints: `pk_extractions`, `uq_extractions_document_id`,
@@ -312,13 +335,16 @@ One row per agent run (upload and every reprocess), written by `agent.service`.
 | `summary` | `TEXT` NULL | The final summary |
 | `error_code`, `error` | `VARCHAR(50)` / `TEXT` NULL | Why a run failed |
 | `model` | `VARCHAR(100)` NULL | Model that answered the agent loop |
-| `agent_prompt_version`, `summary_prompt_version` | `VARCHAR(50)` | `agent.document.v1`, `agent.summary.v1` |
+| `agent_prompt_version`, `summary_prompt_version` | `VARCHAR(50)` | `agent.document.v2`, `agent.summary.v2` (0008) |
 | `prompt_tokens`, `completion_tokens` | `INTEGER` | `CHECK >= 0`, default 0; agent-loop + summary calls only |
+| `overall_confidence` | `NUMERIC(4,3)` NULL | `CHECK BETWEEN 0 AND 1`; copy of `result.confidence.overall` for metrics (0008) |
+| `needs_review` | `BOOLEAN` NULL | Copy of `result.confidence.needs_review` (0008) |
 | `started_at`, `finished_at` | `TIMESTAMPTZ` | `now()` default / set when the run ends |
 
 Constraints: `pk_agent_runs`, `fk_agent_runs_document_id_documents`,
 `ck_agent_runs_mode_valid`, `ck_agent_runs_trigger_valid`, `ck_agent_runs_status_valid`,
-`ck_agent_runs_prompt_tokens_non_negative`, `ck_agent_runs_completion_tokens_non_negative`;
+`ck_agent_runs_prompt_tokens_non_negative`, `ck_agent_runs_completion_tokens_non_negative`,
+`ck_agent_runs_overall_confidence_range`;
 indexes `ix_agent_runs_document_id_started_at (document_id, started_at DESC)` and the partial
 unique `uq_agent_runs_document_running (document_id) WHERE status = 'running'` (one running
 run per document).
@@ -336,19 +362,20 @@ only — never prompts, replies or document text.
 | `run_id` | `UUID` NULL | FK `agent_runs.id`, `ON DELETE CASCADE`; from the `run_id` context var |
 | `step_index` | `INTEGER` NULL | The tool step the call was made in; null for agent-loop turns |
 | `agent` | `VARCHAR(30)` NULL | `document` (B4 adds more) |
-| `purpose` | `VARCHAR(40)` | `vision_transcription`, `structured_extraction`, `agent_loop`, `summary`, `embedding`, `unknown` |
+| `purpose` | `VARCHAR(40)` | `vision_transcription`, `structured_extraction`, `grounding_retry` (0008), `agent_loop`, `summary`, `embedding`, `unknown` |
 | `kind` | `VARCHAR(20)` | `CHECK` `chat` / `embedding` |
 | `model` | `VARCHAR(100)` | Model the API reported (requested model on failure) |
 | `prompt_version` | `VARCHAR(50)` NULL | The caller's `PROMPT_VERSION` |
 | `prompt_tokens`, `completion_tokens` | `INTEGER` | `CHECK >= 0`, default 0; 0 on a failed call (no usage returned) |
 | `cost_usd` | `NUMERIC(12,6)` NULL | `CHECK >= 0`; estimated at write time from `observability/pricing.py`; null for an unpriced model |
-| `latency_ms` | `INTEGER` | `CHECK >= 0`; includes the SDK's own retries |
-| `status`, `error_code` | `VARCHAR(10)` / `VARCHAR(50)` NULL | `CHECK` `ok` / `error`; the exception's code (`llm_error`, `llm_invalid_output`, `internal_error`) |
+| `latency_ms` | `INTEGER` | `CHECK >= 0`; one attempt (0008: retries are their own rows; backoff waits are in no row) |
+| `status`, `error_code` | `VARCHAR(10)` / `VARCHAR(50)` NULL | `CHECK` `ok` / `error`; the exception's code (`llm_error`, `llm_rate_limited`, `llm_timeout`, `llm_unavailable`, `llm_quota_exceeded`, `llm_invalid_output`, `internal_error`) |
 | `started_at` | `TIMESTAMPTZ` | When the call started (app clock, UTC) |
+| `attempt` | `INTEGER` | `CHECK >= 1`, default 1; 2+ for a transient-error retry of the same call (0008) |
 
 Constraints: `pk_llm_calls`, `fk_llm_calls_document_id_documents`,
 `fk_llm_calls_run_id_agent_runs`, `ck_llm_calls_kind_valid`, `ck_llm_calls_status_valid`, and
-non-negative checks on tokens, cost and latency; indexes
+non-negative checks on tokens, cost and latency, `ck_llm_calls_attempt_positive`; indexes
 `ix_llm_calls_document_id_started_at`, `ix_llm_calls_run_id`, `ix_llm_calls_started_at`. No
 retention job: rows go with their document.
 
@@ -360,14 +387,14 @@ Read by `app/core/config.py` from environment variables, then `../.env` / `.env`
 |---|---|---|
 | `OPENAI_API_KEY` | blank | Required only for real LLM calls; created lazily |
 | `OPENAI_MODEL`, `OPENAI_VISION_MODEL`, `OPENAI_EMBEDDING_MODEL` | `gpt-4.1-mini`, `gpt-4.1-mini`, `text-embedding-3-small` | Model names |
-| `OPENAI_TIMEOUT_SECONDS`, `OPENAI_MAX_RETRIES` | `60`, `2` | SDK client settings |
+| `OPENAI_TIMEOUT_SECONDS`, `OPENAI_MAX_RETRIES` | `60`, `2` | Per-attempt timeout; transient-error retries per call (0–10), done by `app/core/llm.py` with backoff + jitter (the SDK's own retries are off) |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | `appfuxion`, `change_me_locally`, `appfuxion` | Database credentials (also used by the db container) |
 | `POSTGRES_HOST` | `localhost` | `db` inside Compose |
 | `DB_PORT` | `5432` | Host port for the db container / a local backend; Compose pins the backend to 5432 |
 | `DATABASE_URL` | blank | Optional full URL; derived from `POSTGRES_*` when blank |
 | `AGENT_MODE` | `multi` | `single` or `multi`; `multi` logs a warning and runs the single Document Agent until B4 |
 | `BASE_CURRENCY` | `MYR` | 3-letter ISO 4217 code; totals in another currency are converted to it (it must be in the rate table for a conversion to succeed) |
-| `AGENT_MAX_STEPS` | `8` | 1–30; most model turns per agent run (`agent_max_steps` when reached) |
+| `AGENT_MAX_STEPS` | `10` | 1–30; most model turns per agent run (`agent_max_steps` when reached); 10 since 0008 added `check_grounding` |
 | `MAX_UPLOAD_MB` | `10` | Upload size limit |
 | `STORAGE_DIR` | `./storage` | Upload directory (relative to `backend/`); `/app/storage` in Compose |
 | `VISION_MAX_PAGES` | `5` | Most pages of a scanned PDF sent to the vision model (>= 1); later pages are skipped and logged |
@@ -415,7 +442,9 @@ back to `processing` with one conditional `UPDATE` (409 `already_processing` oth
 The agent (`app/modules/agent/`): `runner.AgentRunner(llm, tools, max_steps=…)` is the
 shared OpenAI tool-calling loop (one step = one model turn, temperature 0, strict function
 tools, `ToolError(code, message, fatal)`); `tools.build_document_tools(ctx)` binds the five
-tools to one document and enforces the order (each tool needs its predecessor *in this run*);
+tools to one document and enforces the order (each tool needs its predecessor *in this run*;
+0008: `validate_invoice` refuses with `grounding_required` until `check_grounding` ran for the
+current extraction, and computes the confidence report right after validating);
 `service.run_document_agent(document_id, *, llm, storage, trigger, force)` opens its own
 session, records an `agent_runs` row, saves each step as it happens, and completes or fails
 the run and the document in one transaction.
@@ -436,6 +465,16 @@ once with the validation errors fed back, commits its own row, never changes the
 status, and raises `StructuredExtractionError` / `LLMError` for the caller to turn into
 `failed`.
 
+Guardrails (0008) are pure too: `guardrails.service.check_grounding(data, raw_text, method)`
+looks every non-null value up in the full text (rules in `guardrails/matching.py`) and
+`score_confidence(data, grounding, validation)` returns the `ConfidenceReport` (or `None` for
+unknown documents). `structured_extraction.service.ground_extraction(db, llm, document_id)`
+is what the `check_grounding` tool calls: it checks the saved extraction, re-asks the model
+with the ungrounded values (`Purpose.GROUNDING_RETRY`) while the 3-call budget
+(`EXTRACTION_BUDGET`, shared with the schema retry) lasts, keeps the attempt with the fewest
+ungrounded values and saves it with its report; a row that already has a report is returned
+unchanged.
+
 Validation is pure (no DB, LLM or network):
 `validation.service.validate_invoice(data: InvoiceData, *, today=None) -> ValidationReport`
 never raises, and `validation.service.convert_currency(amount: Decimal, from_currency,
@@ -446,7 +485,11 @@ helpers. The 0005 agent tools call them.
 
 LLM seam: `LLMClient.complete(..., response_format=X)` returns `LLMResponse.parsed`; a reply
 that fails `X`'s validation raises `LLMOutputError` (both `OpenAILLMClient` and `FakeLLM`),
-and a refusal is returned as `LLMResponse.refusal` with `parsed=None`.
+and a refusal is returned as `LLMResponse.refusal` with `parsed=None`. Since 0008 both clients
+run each call through `_with_retries`: an `LLMError` with `retryable=True` (rate limit,
+timeout, connection, 408/409/5xx) is retried up to `1 + OPENAI_MAX_RETRIES` attempts with
+full-jitter backoff (1 s base, 20 s cap) or the server's `Retry-After` (≤ 60 s); tests
+replace `llm._sleep` (autouse `retry_waits` fixture).
 
 Observability (0007): every `complete` / `embed` call of `OpenAILLMClient` and `FakeLLM` runs
 inside `llm._observe`, which snapshots the trace labels, times the call, logs one `llm.call`
@@ -461,7 +504,8 @@ the summary tool's `_complete` are decorated with their `purpose` and `prompt_ve
 unlabelled chat call is recorded as `unknown` with a warning. Tests register no recorder by
 default; ledger tests opt in with `llm_recorder`. The trace and metrics read other modules
 through `documents.service` (`get_document`, `count_by_status`) and `agent.service`
-(`list_runs`, `run_stats`, `completed_run_ids`).
+(`list_runs`, `run_stats`, `completed_run_ids`, `confidence_stats`), and since 0008
+`structured_extraction.service.grounding_stats` for the metrics `guardrails` block.
 
 ## Dependencies added in 0002
 
@@ -477,6 +521,12 @@ through `documents.service` (`get_document`, `count_by_status`) and `agent.servi
 | Package | Used for |
 |---|---|
 | `pycountry` | ISO 4217 currency code lookup (LGPL-2.1, no dependencies of its own) |
+
+## Dependencies added in 0008
+
+| Package | Used for |
+|---|---|
+| `rapidfuzz` | Fuzzy partial matching with alignment for the grounding check (MIT) |
 
 ## Frontend dependencies added in 0006
 

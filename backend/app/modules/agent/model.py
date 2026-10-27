@@ -1,13 +1,16 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     Uuid,
@@ -29,6 +32,7 @@ class AgentRun(Base):
         CheckConstraint("status IN ('running', 'completed', 'failed')", name="status_valid"),
         CheckConstraint("prompt_tokens >= 0", name="prompt_tokens_non_negative"),
         CheckConstraint("completion_tokens >= 0", name="completion_tokens_non_negative"),
+        CheckConstraint("overall_confidence BETWEEN 0 AND 1", name="overall_confidence_range"),
         Index("ix_agent_runs_document_id_started_at", "document_id", text("started_at DESC")),
         # At most one running run per document (PRD 0005 D12).
         Index(
@@ -62,5 +66,8 @@ class AgentRun(Base):
     # Agent-loop and summary calls of this run (extraction tokens stay on their own rows).
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Copies of the result's confidence for metrics queries (0008); NULL before / if unscored.
+    overall_confidence: Mapped[Decimal | None] = mapped_column(Numeric(4, 3), nullable=True)
+    needs_review: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

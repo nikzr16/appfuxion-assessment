@@ -13,7 +13,7 @@ export const ROLE_ORDER: readonly AgentRole[] = ["extraction", "validation", "re
 export const ROLE_INFO: Record<AgentRole, { name: string; description: string }> = {
   extraction: {
     name: "Extraction Agent",
-    description: "Reads the file and extracts the invoice fields",
+    description: "Reads the file, extracts the invoice fields and checks them against the text",
   },
   validation: {
     name: "Validation Agent",
@@ -27,6 +27,7 @@ const ROLE_OF_TOOL: Record<string, AgentRole> = {
   extract_text: "extraction",
   extract_tables: "extraction",
   extract_structured_data: "extraction",
+  check_grounding: "extraction",
   validate_invoice: "validation",
   convert_currency: "validation",
   check_vendor_history: "validation",

@@ -81,6 +81,8 @@ class LLMSpan(BaseModel):
     started_at: datetime
     offset_ms: int
     duration_ms: int
+    # 1 = first try; 2+ = a transient-error retry of the same call (feature 0008).
+    attempt: int = 1
 
 
 Span = Annotated[ToolSpan | LLMSpan, Field(discriminator="kind")]
@@ -119,6 +121,24 @@ class LLMMetrics(UsageTotals):
     avg_cost_per_document: Decimal | None
 
 
+class GuardrailMetrics(BaseModel):
+    """Extraction quality in the window (feature 0008 metrics, PRD D10)."""
+
+    runs_scored: int
+    avg_confidence: float | None
+    by_label: dict[str, int]
+    needs_review: int
+    # needs_review / runs_scored; ``None`` when nothing is scored yet.
+    needs_review_rate: float | None
+    values_checked: int
+    values_grounded: int
+    # values_grounded / values_checked; ``None`` when nothing was checked.
+    grounding_rate: float | None
+    grounding_retry_extractions: int
+    # Ledger rows that were a transient-error retry (attempt > 1).
+    transient_retries: int
+
+
 class MetricsSummary(BaseModel):
     window_days: int | None
     since: datetime | None
@@ -130,4 +150,5 @@ class MetricsSummary(BaseModel):
     llm: LLMMetrics
     by_model: list[GroupTotals]
     by_purpose: list[GroupTotals]
+    guardrails: GuardrailMetrics
     prices_as_of: date

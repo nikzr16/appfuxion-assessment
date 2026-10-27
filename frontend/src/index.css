@@ -33,6 +33,14 @@
      pair on both surfaces (lightness, chroma, CVD and normal-vision separation, contrast). */
   --series-tool: #4f46e5;
   --series-llm: #eb6834;
+  /* "Show in text" match in the raw text (0008). */
+  --highlight: #fde68a;
+  /* Confidence split bar (0008): high / medium / low, validated as adjacent segments on the
+     surface (lightness band, CVD and normal-vision separation, contrast); shown with icons,
+     labels and a 2px gap so identity never rests on colour alone. */
+  --conf-high: #047857;
+  --conf-medium: #d97706;
+  --conf-low: #b91c1c;
   --shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 4px 16px rgb(15 23 42 / 0.05);
   color-scheme: light;
 }
@@ -61,6 +69,10 @@
   --ring: #a5abff;
   --series-tool: #9085e9;
   --series-llm: #d95926;
+  --highlight: rgb(251 191 36 / 0.32);
+  --conf-high: #12936a;
+  --conf-medium: #c2850a;
+  --conf-low: #dc4a4a;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.25);
   color-scheme: dark;
 }
@@ -92,6 +104,10 @@
   --color-ring: var(--ring);
   --color-series-tool: var(--series-tool);
   --color-series-llm: var(--series-llm);
+  --color-highlight: var(--highlight);
+  --color-conf-high: var(--conf-high);
+  --color-conf-medium: var(--conf-medium);
+  --color-conf-low: var(--conf-low);
 
   --shadow-card: var(--shadow);
 }

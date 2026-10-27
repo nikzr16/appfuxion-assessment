@@ -30,6 +30,8 @@ class Extraction(Base):
     # Summed over the attempts whose reply was received (see ENGINEERING_NOTES limitations).
     prompt_tokens: Mapped[int] = mapped_column(Integer)
     completion_tokens: Mapped[int] = mapped_column(Integer)
+    # ``ExtractionGrounding`` in JSON mode once ``check_grounding`` ran (0008); NULL before.
+    grounding: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

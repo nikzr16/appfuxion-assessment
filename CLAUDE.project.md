@@ -127,7 +127,7 @@ Rule of thumb: **AI does the thinking; code does the maths and keeps the order.*
 
 | Agent | LLM? | Tools | Source |
 |---|---|---|---|
-| Document Agent (single mode) | yes | extract_text, extract_structured_data, validate_invoice, convert_currency, generate_summary | Brief Part 4 |
+| Document Agent (single mode) | yes | extract_text, extract_structured_data, check_grounding, validate_invoice, convert_currency, generate_summary | Brief Part 4 (+ B2 grounding) |
 | Extraction Agent | yes | extract_text, extract_tables, extract_structured_data | Brief bonus (multi-agent) |
 | Validation Agent | yes — checks are deterministic code | validate_invoice, convert_currency, check_vendor_history | Brief bonus (multi-agent) |
 | Reporting Agent | yes | generate_summary, search_similar_invoices | Brief bonus (multi-agent) |
@@ -137,7 +137,8 @@ Rule of thumb: **AI does the thinking; code does the maths and keeps the order.*
 - All LLM agents share one `AgentRunner` (OpenAI tool-calling loop with a max-steps limit
   and a recorded tool-call log).
 - `AGENT_MODE=single|multi` (default `multi`).
-- Code guard: `generate_summary` refuses to run until `validate_invoice` has run.
+- Code guards: `generate_summary` refuses to run until `validate_invoice` has run, and
+  `validate_invoice` refuses until `check_grounding` has run for the current extraction (0008).
 
 ## Git Branching Model
 

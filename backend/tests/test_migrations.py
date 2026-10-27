@@ -18,7 +18,7 @@ def test_pgvector_type_is_usable(db_session: Session) -> None:
 
 def test_alembic_version_is_at_head(db_session: Session) -> None:
     version = db_session.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert version == "0006"
+    assert version == "0007"
 
 
 def test_documents_table_has_a_native_uuid_primary_key(db_session: Session) -> None:
@@ -202,6 +202,7 @@ def test_extractions_table_has_native_uuid_keys_and_jsonb_data(db_session: Sessi
         "attempts",
         "prompt_tokens",
         "completion_tokens",
+        "grounding",
         "created_at",
         "updated_at",
     }
@@ -306,6 +307,8 @@ def test_agent_runs_table_has_native_uuid_keys_and_jsonb_columns(db_session: Ses
         "summary_prompt_version",
         "prompt_tokens",
         "completion_tokens",
+        "overall_confidence",
+        "needs_review",
         "started_at",
         "finished_at",
     }
@@ -328,6 +331,7 @@ def test_agent_runs_table_has_its_constraints_and_indexes(db_session: Session) -
         "ck_agent_runs_status_valid": "c",
         "ck_agent_runs_prompt_tokens_non_negative": "c",
         "ck_agent_runs_completion_tokens_non_negative": "c",
+        "ck_agent_runs_overall_confidence_range": "c",
     }
     indexes = dict(
         db_session.execute(
@@ -442,6 +446,7 @@ def test_llm_calls_table_has_native_uuid_keys_and_its_columns(db_session: Sessio
         "status",
         "error_code",
         "started_at",
+        "attempt",
     }
 
 
@@ -464,6 +469,7 @@ def test_llm_calls_table_has_its_constraints_and_indexes(db_session: Session) ->
         "ck_llm_calls_completion_tokens_non_negative": "c",
         "ck_llm_calls_cost_usd_non_negative": "c",
         "ck_llm_calls_latency_ms_non_negative": "c",
+        "ck_llm_calls_attempt_positive": "c",
     }
     indexes = set(
         db_session.execute(
@@ -539,4 +545,40 @@ def test_deleting_a_document_cascades_to_its_runs_and_llm_calls(db_session: Sess
     db_session.execute(text("DELETE FROM documents WHERE id = :id"), {"id": document_id})
     remaining = db_session.execute(text("SELECT count(*) FROM llm_calls")).scalar()
     assert remaining == 1
+    db_session.rollback()
+
+
+# -- guardrails columns (0007) ---------------------------------------------------------
+
+
+def test_guardrails_columns_have_their_types(db_session: Session) -> None:
+    rows = db_session.execute(
+        text(
+            "SELECT table_name, column_name, udt_name, is_nullable, column_default "
+            "FROM information_schema.columns WHERE (table_name, column_name) IN "
+            "(('extractions', 'grounding'), ('agent_runs', 'overall_confidence'), "
+            "('agent_runs', 'needs_review'), ('llm_calls', 'attempt'))"
+        )
+    ).all()
+    found = {(r[0], r[1]): (r[2], r[3], r[4]) for r in rows}
+    assert found[("extractions", "grounding")] == ("jsonb", "YES", None)
+    assert found[("agent_runs", "overall_confidence")][:2] == ("numeric", "YES")
+    assert found[("agent_runs", "needs_review")][:2] == ("bool", "YES")
+    assert found[("llm_calls", "attempt")] == ("int4", "NO", "1")
+
+
+@pytest.mark.parametrize("value", ["1.001", "-0.001"])
+def test_overall_confidence_must_be_between_0_and_1(db_session: Session, value: str) -> None:
+    document_id = _insert_document(db_session)
+    _insert_run(db_session, document_id, status="completed")
+    with pytest.raises(IntegrityError):
+        db_session.execute(text("UPDATE agent_runs SET overall_confidence = :v"), {"v": value})
+    db_session.rollback()
+
+
+def test_llm_call_attempt_defaults_to_1_and_rejects_0(db_session: Session) -> None:
+    _insert_call(db_session)
+    assert db_session.execute(text("SELECT attempt FROM llm_calls")).scalar_one() == 1
+    with pytest.raises(IntegrityError):
+        db_session.execute(text("UPDATE llm_calls SET attempt = 0"))
     db_session.rollback()
