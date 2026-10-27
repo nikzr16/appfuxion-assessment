@@ -8,7 +8,11 @@ feature number (`0000`, `0001`, ...).
 
 - [Summary for reviewers](#summary-for-reviewers)
   - [The system at a glance](#the-system-at-a-glance)
+  - [How a document flows, step by step](#how-a-document-flows-step-by-step)
+  - [The agents](#the-agents)
   - [Where each part of the brief lives](#where-each-part-of-the-brief-lives)
+  - [The bonus tasks in brief](#the-bonus-tasks-in-brief)
+  - [Production-style engineering practices](#production-style-engineering-practices)
   - [The decisions that shape everything](#the-decisions-that-shape-everything)
   - [The most important limitations](#the-most-important-limitations)
   - [What would change first for production](#what-would-change-first-for-production)
@@ -45,6 +49,46 @@ function, and every number the user sees (totals checks, tax, conversion, vendor
 confidence) comes from deterministic code, not the model. `AGENT_MODE=single` runs the same
 tools through one Document Agent instead, with the same result shape.
 
+### How a document flows, step by step
+
+Each step is a tool an agent calls. The model decides when to call it, but every tool refuses
+to run before the one it depends on, so the order below always holds.
+
+| # | Agent | Tool | Done by | What happens |
+|---|---|---|---|---|
+| 0 | — | `POST /api/documents` | code | File type checked from its bytes, file stored, UUID returned with `status: processing`, run started in the background |
+| 1 | Extraction | `extract_text` | code, or LLM for scans | Text PDFs parsed locally (`pdfplumber`); scans, photos and image-only pages read by the vision model, one call per page |
+| 2 | Extraction | `extract_tables` | code (LLM output for scans) | Tables and layout blocks found on each page; a clear line-item table is kept for step 3 |
+| 3 | Extraction | `extract_structured_data` | LLM | Strict structured output into the `InvoiceData` schema; invalid replies retried once with the errors; line items copied from the table by code when one was found |
+| 4 | Extraction | `check_grounding` | code | Every extracted value looked up in the document's own text; values not found trigger a re-ask (at most 3 extraction calls in total) |
+| 5 | Validation | `validate_invoice` | code | Required fields, totals, tax, line items, dates and currency checked; each problem is an issue with a severity; each field and the document get a confidence score |
+| 6 | Validation | `check_vendor_history` | code | Duplicate invoice number and unusual amount checked against the vendor's earlier invoices; confidence re-scored with any new issues |
+| 7 | Validation | `convert_currency` | code | Only when the currency is not `BASE_CURRENCY`: converted with a dated rate table |
+| 8 | Reporting | `search_similar_invoices` | code + embedding | The invoice's key fields are embedded and its most similar earlier invoices are found in pgvector |
+| 9 | Reporting | `generate_summary` | LLM, checked by code | A 2–5 sentence summary from the structured data only; code checks that it mentions every validation issue and every field that needs review |
+| 10 | — | (Coordinator) | code | Result saved, invoice indexed and the document marked `completed` in one transaction; any fatal error marks it `failed` with the reason |
+
+`GET /api/documents/{id}/result` then returns `{document_id, structured_data, validation,
+conversion, summary, confidence}`, and `GET /runs` and `GET /trace` show every step above with
+its timing, tokens and cost.
+
+### The agents
+
+All agents share one `AgentRunner` (`modules/agent/runner.py`): an agent is a system prompt,
+a list of tools with strict JSON schemas, a step limit and a "done" check. None of them ever
+sees the document's raw text; tools return short facts such as counts and statuses.
+
+| Agent | Mode | Job | Tools | Turn limit |
+|---|---|---|---|---|
+| Extraction Agent | `multi` (default) | Read the document into checked structured data | `extract_text`, `extract_tables`, `extract_structured_data`, `check_grounding` | 6 |
+| Validation Agent | `multi` | Check the data and put it in context | `validate_invoice`, `check_vendor_history`, `convert_currency` | 6 |
+| Reporting Agent | `multi` | Compare with past invoices and write the summary | `search_similar_invoices`, `generate_summary` | 4 |
+| Document Agent | `single` | All three jobs in one conversation | all nine tools above | `AGENT_MAX_STEPS` (14) |
+| Query Agent | Ask AI chat | Answer questions about stored invoices | `search_invoices`, `get_vendor_history`, `submit_answer` | `QUERY_MAX_STEPS` (6) |
+
+The Coordinator (`modules/agent/coordinator.py`) is plain Python, not an LLM: it runs the three
+agents in a fixed order and hands each one a short brief written by code from the saved data.
+
 ### Where each part of the brief lives
 
 | Brief | Feature | Main code | Notes |
@@ -63,6 +107,65 @@ tools through one Document Agent instead, with the same result shape.
 
 Each feature also has a PRD (`docs/prd/`), an implementation plan (`docs/plan/`) and a log of
 where the build differed from the plan (`docs/decisions/`).
+
+### The bonus tasks in brief
+
+All five optional bonus tasks are implemented. Each line links to its full notes.
+
+- **Multi-agent system** ([0011](#0011---multi-agent-coordinator--extraction--validation--reporting-agents)):
+  the brief's Extraction, Validation and Reporting agents, run by a code Coordinator. Each agent
+  has only its own tools, and code decides when it is done. Measured on the same invoices, it
+  used about half the agent-loop tokens of the single agent and cost about 40 % less.
+- **RAG system** ([0010](#0010---retrieval-pgvector-vendor-history-ask-ai)): every processed
+  invoice is embedded into pgvector (HNSW, cosine) and compared with the same vendor's earlier
+  invoices (duplicate number, unusual amount). The **Ask AI** chat answers questions such as
+  "Compare this invoice with previous invoices from the same vendor" using hybrid search: SQL
+  filters, exact identifier matches, then vector similarity. Code does every sum, and every
+  number in an answer is checked against the tool results.
+- **Guardrails** ([0008](#0008---guardrails-grounding-confidence-retries)): *hallucination
+  detection* looks every extracted value up in the document text and re-asks for values not
+  found; *confidence scoring* gives each field and the document a score anyone can recompute,
+  plus a "needs review" flag; the *retry strategy* covers invalid output, ungrounded values,
+  rate limits, timeouts and outages (backoff with jitter).
+- **Observability** ([0007](#0007---observability-token-ledger-traces-metrics)): every LLM call
+  is a ledger row (purpose, model, tokens, estimated cost, latency, outcome); JSON logs carry
+  `document_id` and `run_id`, and each run logs its `duration_ms` and tokens. Per-document
+  traces and a metrics page (success rate, p95 time, cost per document, by model, purpose and
+  agent) are in the UI.
+- **Computer vision enhancement** ([0009](#0009---vision-tables-layout-multimodal-extraction)):
+  *table extraction* and *layout detection* (vendor, bill-to, totals and other blocks, drawn on
+  the page) for text PDFs; scans are read by a *multimodal LLM* that sees the page images during
+  extraction.
+
+### Production-style engineering practices
+
+- **One command to run.** `docker compose up --build` starts Postgres + pgvector, the backend
+  and the nginx-served UI with health checks and start-up ordering. The backend image runs as a
+  non-root user and applies the Alembic migrations on start.
+- **Configuration and secrets.** One git-ignored `.env`, read with typed `pydantic-settings`;
+  every key is documented in `.env.example`. No secret is in the code or the git history.
+- **CI on every push** (GitHub Actions): ruff lint and format check, then pytest with coverage
+  against a real PostgreSQL + pgvector service; for the frontend, ESLint, TypeScript, Vitest
+  and a production build.
+- **Tests that never call OpenAI.** Every LLM call goes through the `LLMClient` protocol, and
+  the tests inject a scripted `FakeLLM` that runs the same retry and recording paths. 902
+  backend tests (unit, API and migration tests against a separate test database; 98 % line
+  coverage of `app/`) and 157 frontend tests.
+- **Enforced boundaries.** Each feature is a module with its own router, service, schema, crud
+  and model. Modules call each other only through `service` and `schema`, and AST tests fail
+  the build if one imports another's `crud` or `model`.
+- **Reliable data handling.** UUID keys, exact `Decimal` money, file type checked from its
+  bytes, idempotent tools, one transaction to complete a run, a partial unique index so a
+  document has only one running run, and append-only history for runs and layout analyses.
+- **Predictable errors.** One `{"error": {"code", "message"}}` envelope with stable codes;
+  recoverable tool errors go back to the agent, and fatal ones fail the document with a clear
+  reason.
+- **Versioned prompts.** Every prompt has a version string that is stored with each result and
+  each ledger row, so outputs, costs and failures can be compared across prompt changes.
+- **Licences checked.** The document-processing libraries are permissive (MIT, BSD, Apache,
+  HPND), plus LGPL `pycountry`; PyMuPDF (AGPL) was rejected so the repo could be public.
+- **Docs-first process.** Each feature went PRD → plan → code → decision log, with the notes
+  in this file written as it shipped.
 
 ### The decisions that shape everything
 
