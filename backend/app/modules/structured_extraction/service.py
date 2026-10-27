@@ -3,6 +3,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -12,15 +13,20 @@ from app.core.llm import LLMClient, Message, Purpose, TokenUsage
 from app.core.logging import bind_document_id, bind_trace
 from app.modules.documents import service as documents_service
 from app.modules.documents.schema import DocumentStatus
+from app.modules.guardrails import service as guardrails_service
+from app.modules.guardrails.schema import ExtractionGrounding, GroundingAttempt, GroundingReport
 from app.modules.structured_extraction import crud, prompts
 from app.modules.structured_extraction.model import Extraction
-from app.modules.structured_extraction.schema import ExtractionRead, InvoiceData
+from app.modules.structured_extraction.schema import ExtractionRead, GroundingStats, InvoiceData
 from app.modules.text_extraction import service as text_extraction_service
+from app.modules.text_extraction.schema import DocumentTextRead
 
 logger = logging.getLogger(__name__)
 
 # One retry with the validation errors fed back (PRD D5).
 MAX_ATTEMPTS = 2
+# Extraction calls per extraction in total, schema and grounding retries together (0008 D3).
+EXTRACTION_BUDGET = 3
 # Longer text is cut to its head (vendor, number, dates) and tail (totals) (PRD D8).
 MAX_INPUT_CHARS = 60_000
 HEAD_CHARS = 45_000
@@ -184,6 +190,164 @@ def extract_structured_data(
             },
         )
         return _to_read(row)
+
+
+@dataclass(frozen=True)
+class _Grounded:
+    data: InvoiceData
+    grounding: ExtractionGrounding
+    calls: int
+    usage: TokenUsage
+    model: str | None
+
+
+def _history(used: int, report: GroundingReport) -> list[GroundingAttempt]:
+    """The calls ``extract_structured_data`` made: only its last reply was schema-valid."""
+    return [
+        GroundingAttempt(
+            attempt=attempt,
+            reason="initial" if attempt == 1 else "schema",
+            valid=attempt == used,
+            ungrounded=[f.path for f in report.ungrounded_fields()] if attempt == used else [],
+        )
+        for attempt in range(1, used + 1)
+    ]
+
+
+@bind_trace(purpose=Purpose.GROUNDING_RETRY, prompt_version=prompts.PROMPT_VERSION)
+def _ground_with_retry(
+    llm: LLMClient, text: DocumentTextRead, data: InvoiceData, used: int
+) -> _Grounded:
+    """Check grounding; re-ask with the ungrounded values while the budget lasts (PRD D3).
+
+    Every re-ask counts against ``EXTRACTION_BUDGET`` (shared with the schema retries already
+    spent). A schema-invalid or refused reply is discarded. The kept attempt is the one with
+    the fewest ungrounded values (ties: the latest); the rest are flagged, never nulled.
+    """
+    report = guardrails_service.check_grounding(data, text.raw_text, text.method)
+    history = _history(used, report)
+    base: list[Message] = [
+        {"role": "system", "content": prompts.SYSTEM_PROMPT},
+        {"role": "user", "content": prompts.document_prompt(_fit_text(text.raw_text))},
+    ]
+    best, best_report, kept = data, report, used
+    current, current_report = data, report
+    calls, retries = used, 0
+    usage = TokenUsage()
+    model: str | None = None
+    while current_report.ungrounded and calls < EXTRACTION_BUDGET:
+        calls += 1
+        retries += 1
+        items = [(f.path, f.value) for f in current_report.ungrounded_fields()]
+        messages = [
+            *base,
+            {"role": "assistant", "content": current.model_dump_json()},
+            {"role": "user", "content": prompts.grounding_retry_prompt(items)},
+        ]
+        try:
+            response = llm.complete(messages, response_format=InvoiceData, temperature=0)
+        except LLMOutputError:
+            history.append(
+                GroundingAttempt(attempt=calls, reason="grounding", valid=False, ungrounded=[])
+            )
+            continue
+        usage = usage + response.usage
+        model = response.model
+        if response.refusal or not isinstance(response.parsed, InvoiceData):
+            history.append(
+                GroundingAttempt(attempt=calls, reason="grounding", valid=False, ungrounded=[])
+            )
+            continue
+        current = response.parsed
+        current_report = guardrails_service.check_grounding(current, text.raw_text, text.method)
+        history.append(
+            GroundingAttempt(
+                attempt=calls,
+                reason="grounding",
+                valid=True,
+                ungrounded=[f.path for f in current_report.ungrounded_fields()],
+            )
+        )
+        if current_report.ungrounded <= best_report.ungrounded:
+            best, best_report, kept = current, current_report, calls
+    grounding = ExtractionGrounding(
+        report=best_report,
+        kept_attempt=kept,
+        grounding_retries=retries,
+        attempts=history,
+        checked_at=datetime.now(UTC),
+    )
+    return _Grounded(best, grounding, calls, usage, model)
+
+
+def ground_extraction(db: Session, llm: LLMClient, document_id: uuid.UUID) -> ExtractionRead:
+    """Check the saved extraction against the text and re-extract what is ungrounded (0008).
+
+    The agent's ``check_grounding`` tool. Idempotent: a row that already has a grounding
+    report is returned without any work. Like ``extract_structured_data`` it commits ``db``
+    before any LLM call and commits its own update; it never changes the document's status.
+    """
+    documents_service.get_document_source(db, document_id)  # 404 when unknown
+    with bind_document_id(str(document_id)):
+        row = crud.get_by_document(db, document_id)
+        if row is None:
+            raise ConflictError(
+                "No structured data has been extracted; run extract_structured_data first.",
+                code="structured_data_missing",
+            )
+        extraction = _to_read(row)
+        if extraction.grounding is not None:
+            logger.debug("grounding already checked; reusing it")
+            return extraction
+        text = text_extraction_service.find_text(db, document_id)
+        if text is None:
+            raise ConflictError(
+                "No text has been extracted for this document; run text extraction first.",
+                code="text_not_extracted",
+            )
+        db.commit()  # end the read transaction before any LLM call
+
+        started = time.perf_counter()
+        outcome = _ground_with_retry(llm, text, extraction.data, extraction.attempts)
+        values: dict[str, Any] = {
+            "grounding": outcome.grounding.model_dump(mode="json"),
+            "attempts": outcome.calls,
+            "prompt_tokens": extraction.prompt_tokens + outcome.usage.prompt_tokens,
+            "completion_tokens": extraction.completion_tokens + outcome.usage.completion_tokens,
+        }
+        if outcome.grounding.grounding_retries:
+            values["data"] = outcome.data.model_dump(mode="json")
+            values["prompt_version"] = prompts.PROMPT_VERSION
+            if outcome.model:
+                values["model"] = outcome.model
+        row = crud.update_grounding(db, document_id, values=values)
+        db.commit()
+        report = outcome.grounding.report
+        logger.info(
+            "grounding checked",
+            extra={
+                "checked": report.checked,
+                "grounded": report.grounded,
+                "weak": report.weak,
+                "inferred": report.inferred,
+                "ungrounded": report.ungrounded,
+                "grounding_retries": outcome.grounding.grounding_retries,
+                "kept_attempt": outcome.grounding.kept_attempt,
+                "duration_ms": round((time.perf_counter() - started) * 1000),
+            },
+        )
+        return _to_read(row)
+
+
+def grounding_stats(db: Session, *, since: datetime | None = None) -> GroundingStats:
+    """Grounding totals over extractions updated since ``since`` (feature 0008 metrics)."""
+    extractions, checked, grounded, retried = crud.grounding_totals(db, since=since)
+    return GroundingStats(
+        extractions=extractions,
+        values_checked=checked,
+        values_grounded=grounded,
+        grounding_retry_extractions=retried,
+    )
 
 
 def get_extraction(db: Session, document_id: uuid.UUID) -> ExtractionRead:

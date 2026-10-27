@@ -20,7 +20,15 @@ def test_get_extraction_returns_the_structured_data(
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"document_id", "structured_data", "model", "prompt_version", "attempts"}
+    assert set(body) == {
+        "document_id",
+        "structured_data",
+        "model",
+        "prompt_version",
+        "attempts",
+        "grounding",
+    }
+    assert body["grounding"] is None  # not checked yet (feature 0008)
     assert body["document_id"] == str(document_id)
     assert body["model"] == "fake-model"
     assert body["prompt_version"] == prompts.PROMPT_VERSION
@@ -79,3 +87,21 @@ def test_get_extraction_never_calls_the_llm(
     client.get(f"/api/documents/{document_id}/extraction")
 
     assert fake_llm.calls == []
+
+
+def test_get_extraction_includes_the_grounding_report_once_checked(
+    client: TestClient, db_session: Session, fake_llm: FakeLLM, make_document: MakeDocument
+) -> None:
+    document_id = make_document()
+    fake_llm.queue(invoice())
+    service.extract_structured_data(db_session, fake_llm, document_id)
+    service.ground_extraction(db_session, fake_llm, document_id)
+
+    grounding = client.get(f"/api/documents/{document_id}/extraction").json()["grounding"]
+
+    assert grounding["kept_attempt"] == 1
+    assert grounding["grounding_retries"] == 0
+    assert grounding["report"]["ungrounded"] == 0
+    assert grounding["report"]["method"] == "pdf_parser"
+    vendor = next(f for f in grounding["report"]["fields"] if f["path"] == "vendor")
+    assert vendor["status"] == "grounded" and vendor["page"] == 1

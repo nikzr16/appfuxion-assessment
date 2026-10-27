@@ -13,13 +13,12 @@ from app.core.llm import FakeLLM, get_llm_client
 from app.core.storage import LocalStorage
 from app.main import app
 from app.modules.documents import service as documents_service
-from tests.modules.agent.conftest import SUMMARY, happy_script, text_turn
-from tests.modules.text_extraction import samples
+from tests.modules.agent.conftest import SUMMARY, happy_script, invoice_pdf, text_turn
 
 
 def _upload(client: TestClient) -> httpx.Response:
     return client.post(
-        "/api/documents", files={"file": ("invoice.pdf", samples.text_pdf(), "application/pdf")}
+        "/api/documents", files={"file": ("invoice.pdf", invoice_pdf(), "application/pdf")}
     )
 
 
@@ -49,7 +48,17 @@ def test_upload_runs_the_agent_and_the_result_is_served(client: TestClient, proc
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"document_id", "structured_data", "validation", "conversion", "summary"}
+    assert set(body) == {
+        "document_id",
+        "structured_data",
+        "validation",
+        "conversion",
+        "summary",
+        "confidence",
+    }
+    assert body["confidence"]["label"] == "high"
+    assert body["confidence"]["needs_review"] is False
+    assert body["confidence"]["fields"]["vendor"]["grounding"] == "grounded"
     assert body["document_id"] == processed
     assert body["structured_data"]["total_amount"] == "123.45"  # money as a string
     assert body["structured_data"]["line_items"][1]["amount"] == "103.45"
@@ -69,6 +78,7 @@ def test_runs_lists_the_tool_calls(client: TestClient, processed: str) -> None:
     assert [step["tool"] for step in run["steps"]] == [
         "extract_text",
         "extract_structured_data",
+        "check_grounding",
         "validate_invoice",
         "generate_summary",
     ]

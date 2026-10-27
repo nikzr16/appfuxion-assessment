@@ -18,6 +18,7 @@ dependencies = [
     "pypdfium2>=5.14.0",
     "pillow>=13.0.0",
     "pycountry>=26.2.16",
+    "rapidfuzz>=3.14.6",
 ]
 
 [dependency-groups]

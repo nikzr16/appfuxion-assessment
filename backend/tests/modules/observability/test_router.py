@@ -7,8 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.llm import FakeLLM
-from tests.modules.agent.conftest import happy_script
-from tests.modules.text_extraction import samples
+from tests.modules.agent.conftest import happy_script, invoice_pdf
 
 
 def _assert_error(response: httpx.Response, status_code: int, code: str) -> None:
@@ -23,7 +22,7 @@ def processed(
     """A document uploaded through the real route and processed with the ledger on."""
     fake_llm.queue(*happy_script())
     response = client.post(
-        "/api/documents", files={"file": ("invoice.pdf", samples.text_pdf(), "application/pdf")}
+        "/api/documents", files={"file": ("invoice.pdf", invoice_pdf(), "application/pdf")}
     )
     assert response.status_code == 202
     return response.json()["document_id"]
@@ -38,11 +37,12 @@ def test_trace_of_an_uploaded_document(client: TestClient, processed: str) -> No
     assert body["llm_calls_recorded"] is True
     assert body["run"]["status"] == "completed"
     assert body["run"]["queue_ms"] >= 0
-    assert body["totals"]["llm_calls"] == 6
+    assert body["totals"]["llm_calls"] == 7
     assert body["totals"]["cost_usd"] is None  # fake-model is unpriced
     assert body["prices_as_of"] == "2026-10-27"
     kinds = [span["kind"] for span in body["spans"]]
-    assert kinds.count("tool") == 4 and kinds.count("llm") == 6
+    assert kinds.count("tool") == 5 and kinds.count("llm") == 7
+    assert all(span["attempt"] == 1 for span in body["spans"] if span["kind"] == "llm")
     llm = next(span for span in body["spans"] if span["kind"] == "llm")
     assert set(llm) >= {"purpose", "model", "prompt_tokens", "offset_ms", "duration_ms"}
 
@@ -71,8 +71,8 @@ def test_metrics_summary(client: TestClient, processed: str) -> None:
     assert body["documents"]["completed"] == 1
     assert body["documents"]["success_rate"] == 1.0
     assert body["runs"]["completed"] == 1
-    assert body["llm"]["llm_calls"] == 6
-    assert body["llm"]["avg_tokens_per_document"] == 90
+    assert body["llm"]["llm_calls"] == 7
+    assert body["llm"]["avg_tokens_per_document"] == 105
     assert {g["key"] for g in body["by_purpose"]} == {
         "agent_loop",
         "structured_extraction",

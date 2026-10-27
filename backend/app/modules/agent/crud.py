@@ -1,9 +1,10 @@
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Select, func, select, update
+from sqlalchemy import Select, case, func, select, update
 from sqlalchemy.orm import Session
 
 from app.modules.agent.model import AgentRun
@@ -125,3 +126,28 @@ def completed_duration_stats(
 def completed_ids(db: Session, *, since: datetime | None = None) -> Sequence[uuid.UUID]:
     query = select(AgentRun.id).where(AgentRun.status == RunStatus.COMPLETED.value)
     return db.execute(_since(query, since)).scalars().all()
+
+
+def confidence_totals(
+    db: Session, *, since: datetime | None, high: float, medium: float
+) -> tuple[int, Decimal | None, int, dict[str, int]]:
+    """Scored completed runs: count, average, needs-review count and count per label."""
+    scored = AgentRun.overall_confidence.is_not(None)
+    label = case(
+        (AgentRun.overall_confidence >= high, "high"),
+        (AgentRun.overall_confidence >= medium, "medium"),
+        else_="low",
+    )
+    base = select(
+        func.count(),
+        func.avg(AgentRun.overall_confidence),
+        func.count().filter(AgentRun.needs_review.is_(True)),
+    ).where(AgentRun.status == RunStatus.COMPLETED.value, scored)
+    count, average, review = db.execute(_since(base, since)).one()
+    per_label = (
+        select(label, func.count())
+        .where(AgentRun.status == RunStatus.COMPLETED.value, scored)
+        .group_by(label)
+    )
+    labels = dict(db.execute(_since(per_label, since)).all())
+    return count, average, review, labels

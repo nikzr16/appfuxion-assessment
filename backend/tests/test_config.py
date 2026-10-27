@@ -99,7 +99,7 @@ def test_agent_settings_defaults() -> None:
     settings = make_settings()
     assert settings.agent_mode == "multi"  # runs the single agent until B4 (PRD 0005 D13)
     assert settings.base_currency == "MYR"
-    assert settings.agent_max_steps == 8
+    assert settings.agent_max_steps == 10
 
 
 def test_base_currency_is_normalised_and_read_from_the_environment(

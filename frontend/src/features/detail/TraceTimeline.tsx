@@ -105,6 +105,11 @@ function LLMRow({ span, axis, nested }: { span: LLMSpan; axis: number; nested: b
           <span className="block truncate text-xs text-fg-subtle" title={span.model}>
             <span className="font-mono">{span.model}</span>
             {span.error_code && <span className="ml-1 font-mono text-danger">{span.error_code}</span>}
+            {(span.attempt ?? 1) > 1 && (
+              <span className="ml-1.5 rounded bg-warning-soft px-1 py-px font-sans font-medium text-warning">
+                retry {(span.attempt ?? 1) - 1}
+              </span>
+            )}
           </span>
           <Timing offsetMs={span.offset_ms} durationMs={span.duration_ms} />
         </span>

@@ -28,6 +28,7 @@ from app.modules.observability.schema import (
     DocumentMetrics,
     DocumentTrace,
     GroupTotals,
+    GuardrailMetrics,
     LLMMetrics,
     LLMSpan,
     MetricsSummary,
@@ -36,6 +37,7 @@ from app.modules.observability.schema import (
     TraceRun,
     UsageTotals,
 )
+from app.modules.structured_extraction import service as structured_extraction_service
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,7 @@ def record_llm_call(record: LLMCallRecord) -> None:
             status=record.status,
             error_code=record.error_code,
             started_at=record.started_at,
+            attempt=record.attempt,
         )
         db.commit()
     except Exception:
@@ -182,6 +185,7 @@ def _spans(run: AgentRunRead, rows: Iterable[LlmCall]) -> list[Span]:
                 started_at=row.started_at,
                 offset_ms=offset(row.started_at),
                 duration_ms=row.latency_ms,
+                attempt=row.attempt,
             ),
         )
         for row in rows
@@ -265,7 +269,33 @@ def get_metrics(
         llm=llm,
         by_model=[_group_row(r) for r in crud.group_totals(db, by="model", since=since)],
         by_purpose=[_group_row(r) for r in crud.group_totals(db, by="purpose", since=since)],
+        guardrails=_guardrail_metrics(db, since),
         prices_as_of=pricing.PRICES_AS_OF,
+    )
+
+
+def _guardrail_metrics(db: Session, since: datetime | None) -> GuardrailMetrics:
+    confidence = agent_service.confidence_stats(db, since=since)
+    grounding = structured_extraction_service.grounding_stats(db, since=since)
+    return GuardrailMetrics(
+        runs_scored=confidence.runs_scored,
+        avg_confidence=confidence.avg_confidence,
+        by_label={label.value: count for label, count in confidence.by_label.items()},
+        needs_review=confidence.needs_review,
+        needs_review_rate=(
+            round(confidence.needs_review / confidence.runs_scored, 3)
+            if confidence.runs_scored
+            else None
+        ),
+        values_checked=grounding.values_checked,
+        values_grounded=grounding.values_grounded,
+        grounding_rate=(
+            round(grounding.values_grounded / grounding.values_checked, 3)
+            if grounding.values_checked
+            else None
+        ),
+        grounding_retry_extractions=grounding.grounding_retry_extractions,
+        transient_retries=crud.count_retries(db, since=since),
     )
 
 

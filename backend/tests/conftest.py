@@ -30,6 +30,7 @@ os.environ["DATABASE_URL"] = TEST_URL.render_as_string(hide_password=False)
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
+from app.core import llm as llm_module  # noqa: E402
 from app.core.db import Base, SessionLocal, engine  # noqa: E402
 from app.core.llm import FakeLLM, get_llm_client, register_llm_recorder  # noqa: E402
 from app.core.storage import LocalStorage, get_storage  # noqa: E402
@@ -105,6 +106,14 @@ def no_llm_recorder() -> Iterator[None]:
     register_llm_recorder(None)
     yield
     register_llm_recorder(None)
+
+
+@pytest.fixture(autouse=True)
+def retry_waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Transient-error backoff never sleeps in tests; the waits are collected instead."""
+    waits: list[float] = []
+    monkeypatch.setattr(llm_module, "_sleep", waits.append)
+    return waits
 
 
 @pytest.fixture

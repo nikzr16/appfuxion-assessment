@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from app.modules.guardrails.schema import ConfidenceLabel, ConfidenceReport
 from app.modules.structured_extraction.schema import InvoiceData
 from app.modules.validation.schema import ConversionResult, ValidationReport
 
@@ -57,6 +58,9 @@ class AgentResult(BaseModel):
     validation: ValidationReport
     conversion: ConversionResult | None
     summary: str
+    # Per-field and overall confidence (feature 0008); null for unknown documents and for
+    # results saved before 0008.
+    confidence: ConfidenceReport | None = None
 
 
 class AgentRunRead(BaseModel):
@@ -80,6 +84,15 @@ class AgentRunRead(BaseModel):
     completion_tokens: int
     started_at: datetime
     finished_at: datetime | None
+
+
+class ConfidenceStats(BaseModel):
+    """Confidence of completed runs in a window (feature 0008 metrics)."""
+
+    runs_scored: int
+    avg_confidence: float | None
+    needs_review: int
+    by_label: dict[ConfidenceLabel, int]
 
 
 class RunStats(BaseModel):

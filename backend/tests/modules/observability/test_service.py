@@ -86,7 +86,8 @@ def test_a_run_writes_one_row_per_llm_call_with_labels_and_step_links(
         ("structured_extraction", 1),
         ("agent_loop", None),
         ("agent_loop", None),
-        ("summary", 3),
+        ("agent_loop", None),
+        ("summary", 4),
     ]
     assert {r.run_id for r in rows} == {run_id}
     assert {r.agent for r in rows} == {"document"}
@@ -210,9 +211,9 @@ def test_log_lines_during_a_run_carry_the_document_and_run_ids(
     assert {line["run_id"] for line in run_lines} == {run_id}
     assert all(line["document_id"] == str(document_id) for line in run_lines)
     calls = [line for line in lines if line["message"] == "llm.call"]
-    assert len(calls) == 6
+    assert len(calls) == 7
     assert all(line["run_id"] == run_id and line["agent"] == "document" for line in calls)
-    assert [line["purpose"] for line in calls].count("agent_loop") == 4
+    assert [line["purpose"] for line in calls].count("agent_loop") == 5
     assert {line["level"] for line in calls} == {"INFO"}
     finished = next(line for line in lines if line["message"] == "agent run finished")
     assert finished["run_id"] == run_id
@@ -244,6 +245,8 @@ def test_trace_of_the_latest_run_has_timing_totals_and_ordered_spans(
         ("tool", "extract_structured_data"),
         ("llm", "structured_extraction"),
         ("llm", "agent_loop"),
+        ("tool", "check_grounding"),
+        ("llm", "agent_loop"),
         ("tool", "validate_invoice"),
         ("llm", "agent_loop"),
         ("tool", "generate_summary"),
@@ -251,17 +254,17 @@ def test_trace_of_the_latest_run_has_timing_totals_and_ordered_spans(
     ]
     assert all(s.offset_ms >= 0 and s.duration_ms >= 0 for s in trace.spans)
     llm_spans = [s for s in trace.spans if isinstance(s, LLMSpan)]
-    assert [s.step_index for s in llm_spans if s.purpose != "agent_loop"] == [1, 3]
-    assert trace.totals.llm_calls == 6
-    assert (trace.totals.prompt_tokens, trace.totals.completion_tokens) == (60, 30)
-    assert trace.totals.total_tokens == 90
+    assert [s.step_index for s in llm_spans if s.purpose != "agent_loop"] == [1, 4]
+    assert trace.totals.llm_calls == 7
+    assert (trace.totals.prompt_tokens, trace.totals.completion_tokens) == (70, 35)
+    assert trace.totals.total_tokens == 105
     assert trace.totals.cost_usd is None and trace.totals.cost_complete is False
     assert [(g.key, g.llm_calls) for g in trace.by_purpose] == [
-        ("agent_loop", 4),
+        ("agent_loop", 5),
         ("structured_extraction", 1),
         ("summary", 1),
     ]
-    assert [(g.key, g.total_tokens) for g in trace.by_agent] == [("document", 90)]
+    assert [(g.key, g.total_tokens) for g in trace.by_agent] == [("document", 105)]
 
 
 @pytest.mark.usefixtures("llm_recorder")
@@ -299,10 +302,10 @@ def test_trace_of_a_run_without_ledger_rows_says_so(
     trace = service.get_trace(db_session, document_id)
 
     assert trace.llm_calls_recorded is False
-    assert [s.kind for s in trace.spans] == ["tool"] * 4
+    assert [s.kind for s in trace.spans] == ["tool"] * 5
     assert trace.totals.llm_calls == 0 and trace.totals.cost_usd == Decimal(0)
     assert trace.run is not None
-    assert (trace.run.run_prompt_tokens, trace.run.run_completion_tokens) == (50, 25)
+    assert (trace.run.run_prompt_tokens, trace.run.run_completion_tokens) == (60, 30)
 
 
 def test_trace_of_a_document_without_a_run_and_of_an_unknown_document(
@@ -456,3 +459,50 @@ def test_metrics_with_no_data_at_all(db_session: Session) -> None:
     assert summary.documents.total == 0 and summary.documents.success_rate is None
     assert summary.runs.avg_ms is None
     assert summary.ledger_since is None
+    assert summary.guardrails.runs_scored == 0
+    assert summary.guardrails.avg_confidence is None
+    assert summary.guardrails.needs_review_rate is None
+    assert summary.guardrails.grounding_rate is None
+    assert summary.guardrails.transient_retries == 0
+
+
+# -- Guardrails metrics (feature 0008) ----------------------------------------------------
+
+
+@pytest.mark.usefixtures("llm_recorder")
+def test_metrics_guardrails_block_counts_confidence_grounding_and_retries(
+    db_session: Session, make_document: MakeDocument, run_agent: RunAgent
+) -> None:
+    run_agent(make_document(), FakeLLM(happy_script()))
+    flaky = happy_script()
+    flaky.insert(0, LLMError("busy", code="llm_rate_limited", retryable=True))
+    run_agent(make_document(), FakeLLM(flaky))
+
+    guardrails = service.get_metrics(db_session).guardrails
+
+    assert guardrails.runs_scored == 2
+    assert guardrails.by_label == {"high": 2, "medium": 0, "low": 0}
+    assert guardrails.needs_review == 0 and guardrails.needs_review_rate == 0
+    assert guardrails.values_checked > 0
+    assert guardrails.grounding_rate is not None and 0.8 < guardrails.grounding_rate < 1
+    assert guardrails.grounding_retry_extractions == 0
+    assert guardrails.transient_retries == 1
+    attempts = db_session.scalars(select(LlmCall.attempt).order_by(LlmCall.started_at)).all()
+    assert sorted(attempts) == [1] * (len(attempts) - 1) + [2]
+
+
+@pytest.mark.usefixtures("llm_recorder")
+def test_trace_spans_carry_the_attempt(
+    db_session: Session, make_document: MakeDocument, run_agent: RunAgent
+) -> None:
+    document_id = make_document()
+    script = happy_script()
+    script.insert(0, LLMError("busy", code="llm_unavailable", retryable=True))
+    run_agent(document_id, FakeLLM(script))
+
+    trace = service.get_trace(db_session, document_id)
+    llm_spans = [s for s in trace.spans if isinstance(s, LLMSpan)]
+    assert [(s.attempt, s.status, s.error_code) for s in llm_spans[:2]] == [
+        (1, "error", "llm_unavailable"),
+        (2, "ok", None),
+    ]

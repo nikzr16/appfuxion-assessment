@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     openai_vision_model: str = "gpt-4.1-mini"
     openai_embedding_model: str = "text-embedding-3-small"
     openai_timeout_seconds: float = 60.0
-    openai_max_retries: int = 2
+    # Transient-error retries per call, done by app.core.llm (feature 0008), not the SDK.
+    openai_max_retries: int = Field(default=2, ge=0, le=10)
 
     # -- Database -------------------------------------------------------------
     postgres_user: str = "appfuxion"
@@ -60,7 +61,7 @@ class Settings(BaseSettings):
     # Totals in another currency are converted to this one (ISO 4217 code).
     base_currency: str = "MYR"
     # Most model turns one agent run may take before it fails with ``agent_max_steps``.
-    agent_max_steps: int = Field(default=8, ge=1, le=30)
+    agent_max_steps: int = Field(default=10, ge=1, le=30)
 
     @field_validator("base_currency")
     @classmethod

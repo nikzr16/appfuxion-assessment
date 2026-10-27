@@ -1,5 +1,6 @@
 """Fixtures for the agent tests: scripted tool-call turns, sample data and real documents."""
 
+import io
 import itertools
 import json
 import uuid
@@ -7,6 +8,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
+from reportlab.pdfgen import canvas
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -17,7 +19,6 @@ from app.modules.documents import service as documents_service
 from app.modules.documents.pipeline import register_pipeline_runner
 from app.modules.documents.schema import UploadedFile
 from app.modules.structured_extraction.schema import InvoiceData
-from tests.modules.text_extraction import samples
 
 TURN_USAGE = TokenUsage(prompt_tokens=10, completion_tokens=5)
 SUMMARY = (
@@ -25,6 +26,29 @@ SUMMARY = (
     "and passed validation."
 )
 MakeDocument = Callable[..., uuid.UUID]
+
+# The printed text of the agent tests' default document: every value of ``invoice()`` is in
+# it, so ``check_grounding`` (feature 0008) finds them all and makes no LLM call.
+INVOICE_LINES = (
+    "ACME Supplies Sdn Bhd",
+    "INVOICE INV-2025-001",
+    "Date: 4 March 2025",
+    "Widget 2 x 10.00 = 20.00",
+    "Gadget 1 x 103.45 = 103.45",
+    "Total RM 123.45",
+)
+
+
+def invoice_pdf(lines: tuple[str, ...] = INVOICE_LINES) -> bytes:
+    """A one-page text-layer PDF printing ``lines``."""
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer)
+    for index, line in enumerate(lines):
+        pdf.drawString(72, 780 - 24 * index, line)
+    pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
+
 
 _call_ids = itertools.count(1)
 
@@ -84,6 +108,7 @@ def happy_script(data: InvoiceData | None = None, summary: str = SUMMARY) -> lis
         tool_turn("extract_text"),
         tool_turn("extract_structured_data"),
         data or invoice(),
+        tool_turn("check_grounding"),
         tool_turn("validate_invoice"),
         tool_turn("generate_summary"),
         summary,
@@ -96,7 +121,7 @@ def agent_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = get_settings()
     monkeypatch.setattr(settings, "agent_mode", "single")
     monkeypatch.setattr(settings, "base_currency", "MYR")
-    monkeypatch.setattr(settings, "agent_max_steps", 8)
+    monkeypatch.setattr(settings, "agent_max_steps", 10)
 
 
 @pytest.fixture
@@ -115,7 +140,7 @@ def make_document(db_session: Session, storage: LocalStorage) -> MakeDocument:
         upload = UploadedFile(
             filename="invoice.pdf" if content_type == "application/pdf" else "invoice.png",
             content_type=content_type,
-            data=data if data is not None else samples.text_pdf(),
+            data=data if data is not None else invoice_pdf(),
         )
         return documents_service.create_document(db_session, storage, upload).document_id
 

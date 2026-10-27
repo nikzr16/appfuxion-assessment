@@ -59,6 +59,19 @@ class LLMError(AppError):
     status_code = status.HTTP_502_BAD_GATEWAY
     code = "llm_error"
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        retryable: bool = False,
+        retry_after: float | None = None,
+    ) -> None:
+        super().__init__(message, code=code)
+        # Transient failures (rate limits, timeouts, 5xx) are retried by ``app.core.llm``.
+        self.retryable = retryable
+        self.retry_after = retry_after
+
 
 class LLMOutputError(LLMError):
     """A structured reply did not validate against its schema; ``errors`` says why."""

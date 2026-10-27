@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { makeRun, makeStep } from "../test/fixtures.ts";
-import { buildLanes, modeLabel, roleOfStep, runDurationMs, toolLabel } from "./agents.ts";
+import { buildLanes, modeLabel, roleOfStep, runDurationMs, toolLabel, roleOfTool } from "./agents.ts";
 
 const statuses = (run: Parameters<typeof buildLanes>[0]) =>
   buildLanes(run).map((lane) => [lane.role, lane.status]);
@@ -79,5 +79,12 @@ describe("labels", () => {
   it("computes run duration", () => {
     expect(runDurationMs(makeRun())).toBe(12_000);
     expect(runDurationMs(makeRun({ finished_at: null }))).toBeNull();
+  });
+});
+
+describe("roleOfTool", () => {
+  it("puts the grounding check in the Extraction lane (feature 0008)", () => {
+    expect(roleOfTool("check_grounding")).toBe("extraction");
+    expect(toolLabel("check_grounding")).toBe("Check grounding");
   });
 });

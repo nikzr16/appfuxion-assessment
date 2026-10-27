@@ -5,6 +5,7 @@ import json
 import logging
 import uuid
 from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -25,15 +26,16 @@ from app.modules.documents.schema import DocumentStatus
 from app.modules.text_extraction import service as text_extraction_service
 from app.modules.text_extraction.service import TextExtractionError
 from tests.modules.agent.conftest import (
+    INVOICE_LINES,
     SUMMARY,
     MakeDocument,
     happy_script,
     invoice,
+    invoice_pdf,
     text_turn,
     tool_turn,
     unknown_document,
 )
-from tests.modules.text_extraction import samples
 
 RunAgent = Callable[..., None]
 
@@ -75,15 +77,19 @@ def test_a_scripted_run_completes_the_run_and_the_document(
     assert run.summary_prompt_version == prompts.SUMMARY_PROMPT_VERSION
     assert run.summary == SUMMARY
     assert run.error_code is None and run.finished_at is not None
-    # 4 agent turns + 1 summary call; the structured-extraction call is counted on its own row
-    assert (run.prompt_tokens, run.completion_tokens) == (50, 25)
+    # 5 agent turns + 1 summary call; the structured-extraction call is counted on its own row
+    assert (run.prompt_tokens, run.completion_tokens) == (60, 30)
     assert run.result == {
         "document_id": str(document_id),
         "structured_data": invoice().model_dump(mode="json"),
         "validation": run.result["validation"],
         "conversion": None,
         "summary": SUMMARY,
+        "confidence": run.result["confidence"],
     }
+    assert run.result["confidence"]["label"] == "high"
+    assert run.needs_review is False
+    assert run.overall_confidence == Decimal(str(run.result["confidence"]["overall"]))
     assert run.result["validation"]["status"] == "pass"
 
 
@@ -97,6 +103,7 @@ def test_every_tool_call_is_recorded_without_raw_text(
     assert [step["tool"] for step in run.steps] == [
         "extract_text",
         "extract_structured_data",
+        "check_grounding",
         "validate_invoice",
         "generate_summary",
     ]
@@ -109,9 +116,10 @@ def test_every_tool_call_is_recorded_without_raw_text(
         assert step["duration_ms"] >= 0
         assert step["started_at"]
     assert set(run.steps[0]["result"]) == {"method", "page_count", "characters"}
-    assert run.steps[3]["result"] == {"summary": SUMMARY}
-    stored = json.dumps(run.steps)
-    assert all(line not in stored for line in samples.INVOICE_LINES)
+    assert run.steps[2]["result"]["ungrounded"] == 0
+    assert run.steps[4]["result"] == {"summary": SUMMARY}
+    stored = json.dumps(run.steps)  # values may appear, printed lines never do
+    assert all(line not in stored for line in INVOICE_LINES[1:])
 
 
 def test_the_agent_gets_its_prompts_tools_and_no_document_text(
@@ -123,7 +131,7 @@ def test_the_agent_gets_its_prompts_tools_and_no_document_text(
     run_agent(document_id, fake)
 
     agent_calls = [call for call in fake.calls if call.tools]
-    assert len(agent_calls) == 4
+    assert len(agent_calls) == 5
     first = agent_calls[0]
     assert first.temperature == 0
     assert first.messages == [
@@ -134,7 +142,7 @@ def test_the_agent_gets_its_prompts_tools_and_no_document_text(
         },
     ]
     sent = json.dumps([call.messages for call in agent_calls])
-    assert all(line not in sent for line in samples.INVOICE_LINES)
+    assert all(line not in sent for line in INVOICE_LINES[1:])
 
 
 def test_multi_mode_logs_the_b4_warning_and_runs_single(
@@ -175,6 +183,7 @@ def test_a_summary_before_validation_is_refused_and_the_run_recovers(
             tool_turn("extract_text"),
             tool_turn("extract_structured_data"),
             invoice(),
+            tool_turn("check_grounding"),
             tool_turn("generate_summary"),
             tool_turn("validate_invoice"),
             tool_turn("generate_summary"),
@@ -186,21 +195,23 @@ def test_a_summary_before_validation_is_refused_and_the_run_recovers(
 
     (run,) = _runs(db_session, document_id)
     assert run.status == RunStatus.COMPLETED
-    refused = run.steps[2]
+    refused = run.steps[3]
     assert (refused["tool"], refused["status"]) == ("generate_summary", "error")
     assert refused["error"]["code"] == "validation_required"
-    assert [step["tool"] for step in run.steps[3:]] == ["validate_invoice", "generate_summary"]
+    assert [step["tool"] for step in run.steps[4:]] == ["validate_invoice", "generate_summary"]
 
 
 def test_a_foreign_currency_total_is_converted_into_the_result(
     db_session: Session, make_document: MakeDocument, run_agent: RunAgent
 ) -> None:
-    document_id = make_document()
+    lines = (*INVOICE_LINES[:-1], "Total USD 123.45")
+    document_id = make_document(invoice_pdf(lines))
     fake = FakeLLM(
         [
             tool_turn("extract_text"),
             tool_turn("extract_structured_data"),
             invoice(currency="USD"),
+            tool_turn("check_grounding"),
             tool_turn("validate_invoice"),
             tool_turn(("convert_currency", {"to_currency": "MYR"})),
             tool_turn("generate_summary"),
@@ -340,7 +351,7 @@ def test_reprocess_forces_both_extractions_and_adds_a_run(
     assert (response.document_id, response.status) == (document_id, DocumentStatus.PROCESSING)
     assert _document(db_session, document_id).error is None
 
-    fake = FakeLLM(happy_script(invoice(invoice_number="INV-2025-002")))
+    fake = FakeLLM(happy_script(invoice(subtotal="123.45")))
     run_agent(document_id, fake, trigger=RunTrigger.REPROCESS, force=True)
 
     assert not fake.replies  # the structured extraction really ran again (forced)
@@ -348,9 +359,7 @@ def test_reprocess_forces_both_extractions_and_adds_a_run(
     assert first.trigger == "upload"
     assert second.trigger == "reprocess"
     assert second.status == RunStatus.COMPLETED
-    assert service.get_result(db_session, document_id).structured_data.invoice_number == (
-        "INV-2025-002"
-    )
+    assert service.get_result(db_session, document_id).structured_data.subtotal == Decimal("123.45")
 
 
 def test_reprocess_is_refused_while_processing(
@@ -427,7 +436,7 @@ def test_list_runs_is_newest_first(
 
     assert [run.trigger for run in runs] == ["reprocess", "upload"]
     assert [run.status for run in runs] == [RunStatus.COMPLETED, RunStatus.FAILED]
-    assert len(runs[0].steps) == 4
+    assert len(runs[0].steps) == 5
 
 
 # -- Layering -------------------------------------------------------------------------------

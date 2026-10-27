@@ -13,11 +13,17 @@ every client (``FakeLLM`` included) logs one ``llm.call`` line and hands an
 ``LLMCallRecord`` to the recorder registered with ``register_llm_recorder`` (the
 observability module's token ledger). Callers only label their calls with
 ``app.core.logging.bind_trace(purpose=...)``.
+
+Feature 0008 retries transient failures here instead of in the SDK (``max_retries=0``):
+rate limits, timeouts, connection errors and 5xx are retried with exponential backoff and
+full jitter (honouring ``Retry-After``), and every attempt is measured separately, so each
+one is its own ``llm.call`` line and ledger row with an ``attempt`` number.
 """
 
 import hashlib
 import logging
 import math
+import random
 import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -45,6 +51,7 @@ class Purpose(StrEnum):
 
     VISION_TRANSCRIPTION = "vision_transcription"
     STRUCTURED_EXTRACTION = "structured_extraction"
+    GROUNDING_RETRY = "grounding_retry"
     AGENT_LOOP = "agent_loop"
     SUMMARY = "summary"
     EMBEDDING = "embedding"
@@ -119,6 +126,8 @@ class LLMCallRecord:
     error_code: str | None
     started_at: datetime
     labels: TraceLabels
+    # 1 for the first try of a call, 2+ for transient-error retries (feature 0008).
+    attempt: int = 1
 
 
 LLMRecorder = Callable[[LLMCallRecord], None]
@@ -141,7 +150,7 @@ class _Meter:
 
 
 @contextmanager
-def _observe(kind: CallKind, model: str) -> Iterator[_Meter]:
+def _observe(kind: CallKind, model: str, *, attempt: int = 1) -> Iterator[_Meter]:
     """Time one call; on exit log ``llm.call`` and hand the record to the recorder.
 
     Exceptions from the call are re-raised unchanged. Exceptions from the recorder are
@@ -176,6 +185,7 @@ def _observe(kind: CallKind, model: str) -> Iterator[_Meter]:
             error_code=error_code,
             started_at=started_at,
             labels=labels,
+            attempt=attempt,
         )
         _log_call(record, error)
         _record(record)
@@ -191,6 +201,7 @@ def _log_call(record: LLMCallRecord, error: BaseException | None) -> None:
         "completion_tokens": record.usage.completion_tokens,
         "latency_ms": record.latency_ms,
         "status": record.status,
+        "attempt": record.attempt,
     }
     if error is None:
         logger.info("llm.call", extra=fields)
@@ -208,6 +219,90 @@ def _record(record: LLMCallRecord) -> None:
         recorder(record)
     except Exception:
         logger.warning("llm.call not recorded", exc_info=True)
+
+
+# -- Transient-error retries (feature 0008) ------------------------------------------------
+
+BACKOFF_BASE_SECONDS = 1.0
+BACKOFF_CAP_SECONDS = 20.0
+RETRY_AFTER_CAP_SECONDS = 60.0
+
+# Replaced in tests so backoff never waits.
+_sleep: Callable[[float], None] = time.sleep
+
+
+def _backoff(attempt: int, retry_after: float | None) -> float:
+    """Seconds to wait after failed ``attempt``: the server's hint, else full jitter."""
+    if retry_after is not None:
+        return min(max(retry_after, 0.0), RETRY_AFTER_CAP_SECONDS)
+    ceiling = min(BACKOFF_CAP_SECONDS, BACKOFF_BASE_SECONDS * 2 ** (attempt - 1))
+    return random.uniform(0, ceiling)
+
+
+def _with_retries[T](
+    kind: CallKind, model: str, max_attempts: int, call: Callable[[_Meter], T]
+) -> T:
+    """Run ``call`` (one measured attempt each) until it succeeds or cannot be retried.
+
+    Only an ``LLMError`` with ``retryable=True`` is retried; anything else, and the last
+    attempt's error, propagates unchanged.
+    """
+    attempts = max(max_attempts, 1)
+    for attempt in range(1, attempts + 1):
+        try:
+            with _observe(kind, model, attempt=attempt) as meter:
+                return call(meter)
+        except LLMError as exc:
+            if not exc.retryable or attempt == attempts:
+                raise
+            wait = _backoff(attempt, exc.retry_after)
+            logger.warning(
+                "llm.call retrying",
+                extra={"attempt": attempt, "error_code": exc.code, "wait_ms": round(wait * 1000)},
+            )
+            _sleep(wait)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _retry_after(response: Any) -> float | None:
+    """Seconds from ``retry-after-ms`` / ``retry-after`` (seconds form only), if present."""
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    for name, scale in (("retry-after-ms", 0.001), ("retry-after", 1.0)):
+        raw = headers.get(name)
+        if raw is None:
+            continue
+        try:
+            return float(raw) * scale
+        except ValueError:
+            continue  # an HTTP date: fall back to jittered backoff
+    return None
+
+
+def _classify(exc: openai.OpenAIError, prefix: str = "OpenAI request failed") -> LLMError:
+    """Map an SDK error to an ``LLMError`` with a specific code and retryability (D5)."""
+    message = f"{prefix}: {exc}"
+    if isinstance(exc, openai.APITimeoutError):
+        return LLMError(message, code="llm_timeout", retryable=True)
+    if isinstance(exc, openai.APIConnectionError):
+        return LLMError(message, code="llm_unavailable", retryable=True)
+    if isinstance(exc, openai.APIStatusError):
+        status = exc.status_code
+        retry_after = _retry_after(exc.response)
+        if status == 429:
+            if getattr(exc, "code", None) == "insufficient_quota":
+                return LLMError(message, code="llm_quota_exceeded")
+            return LLMError(
+                message, code="llm_rate_limited", retryable=True, retry_after=retry_after
+            )
+        if status == 408:
+            return LLMError(message, code="llm_timeout", retryable=True, retry_after=retry_after)
+        if status == 409 or status >= 500:
+            return LLMError(
+                message, code="llm_unavailable", retryable=True, retry_after=retry_after
+            )
+    return LLMError(message)
 
 
 class LLMClient(Protocol):
@@ -246,9 +341,10 @@ class OpenAILLMClient:
             client = openai.OpenAI(
                 api_key=self._settings.openai_api_key.get_secret_value(),
                 timeout=self._settings.openai_timeout_seconds,
-                max_retries=self._settings.openai_max_retries,
+                max_retries=0,  # retried by ``_with_retries`` so each attempt is visible
             )
         self._client = client
+        self._max_attempts = 1 + self._settings.openai_max_retries
 
     def complete(
         self,
@@ -269,7 +365,7 @@ class OpenAILLMClient:
         if temperature is not None:
             kwargs["temperature"] = temperature
 
-        with _observe("chat", chosen) as meter:
+        def attempt(meter: _Meter) -> Any:
             try:
                 if response_format is not None:
                     completion = self._client.chat.completions.parse(
@@ -278,12 +374,15 @@ class OpenAILLMClient:
                 else:
                     completion = self._client.chat.completions.create(**kwargs)
             except openai.OpenAIError as exc:
-                raise LLMError(f"OpenAI request failed: {exc}") from exc
+                raise _classify(exc) from exc
             except ValidationError as exc:  # the SDK parses structured replies with Pydantic
                 raise _output_error(exc) from exc
-            usage = _usage_from(completion.usage)
             meter.model = getattr(completion, "model", chosen)
-            meter.usage = usage
+            meter.usage = _usage_from(completion.usage)
+            return completion
+
+        completion = _with_retries("chat", chosen, self._max_attempts, attempt)
+        usage = _usage_from(completion.usage)
 
         message = completion.choices[0].message
         tool_calls = tuple(
@@ -301,14 +400,18 @@ class OpenAILLMClient:
 
     def embed(self, texts: Sequence[str], *, model: str | None = None) -> EmbeddingResponse:
         chosen = model or self._settings.openai_embedding_model
-        with _observe("embedding", chosen) as meter:
+
+        def attempt(meter: _Meter) -> Any:
             try:
                 result = self._client.embeddings.create(model=chosen, input=list(texts))
             except openai.OpenAIError as exc:
-                raise LLMError(f"OpenAI embedding request failed: {exc}") from exc
-            usage = _usage_from(result.usage)
+                raise _classify(exc, "OpenAI embedding request failed") from exc
             meter.model = getattr(result, "model", chosen)
-            meter.usage = usage
+            meter.usage = _usage_from(result.usage)
+            return result
+
+        result = _with_retries("embedding", chosen, self._max_attempts, attempt)
+        usage = _usage_from(result.usage)
 
         return EmbeddingResponse(
             vectors=[list(item.embedding) for item in result.data],
@@ -356,7 +459,8 @@ class FakeLLM:
     Replies may be a string (content), a Pydantic model (structured output), a ready-made
     ``LLMResponse`` (e.g. with tool calls or a refusal) or an exception instance, which is
     raised. A string that fails ``response_format`` validation raises ``LLMOutputError``,
-    as the real client does.
+    as the real client does. Replies go through the same retry loop as the real client: a
+    scripted ``LLMError(..., retryable=True)`` is retried with the next scripted reply.
     """
 
     def __init__(
@@ -366,8 +470,10 @@ class FakeLLM:
         usage: TokenUsage | None = None,
         model: str = "fake-model",
         embedding_dimensions: int = 1536,
+        max_retries: int = 2,
     ) -> None:
         self.replies: deque[FakeReply] = deque(replies)
+        self.max_attempts = 1 + max_retries
         self.usage = usage or TokenUsage(prompt_tokens=10, completion_tokens=5)
         self.model = model
         self.embedding_dimensions = embedding_dimensions
@@ -399,11 +505,16 @@ class FakeLLM:
                 temperature=temperature,
             )
         )
-        # Measured like the real client, so tests exercise the ledger path (PRD 0007 D1).
-        with _observe("chat", model or self.model) as meter:
+
+        # Measured and retried like the real client, so tests exercise the ledger path (PRD
+        # 0007 D1) and the transient-retry path (PRD 0008 D5).
+        def attempt(meter: _Meter) -> LLMResponse:
             response = self._next_response(response_format)
             meter.model = response.model
             meter.usage = response.usage
+            return response
+
+        response = _with_retries("chat", model or self.model, self.max_attempts, attempt)
         self.total_usage = self.total_usage + response.usage
         return response
 

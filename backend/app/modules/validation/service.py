@@ -85,6 +85,14 @@ def minor_units(code: str | None) -> int:
     return MINOR_UNITS.get(code.strip().upper(), DEFAULT_MINOR_UNITS)
 
 
+def expected_fields(document_type: DocumentType) -> list[str]:
+    """Fields a document of this type should have (the required-field table, PRD D3).
+
+    Used by 0008 guardrails to score completeness; ``unknown`` documents expect nothing.
+    """
+    return list(_REQUIRED.get(document_type, {}))
+
+
 def validate_invoice(data: InvoiceData, *, today: date | None = None) -> ValidationReport:
     """Check one document against itself and report every problem as an issue.
 

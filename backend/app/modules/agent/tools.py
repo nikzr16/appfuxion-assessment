@@ -10,7 +10,7 @@ document text.
 import json
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -23,6 +23,8 @@ from app.core.logging import bind_trace
 from app.core.storage import Storage
 from app.modules.agent import prompts
 from app.modules.agent.runner import NO_ARGUMENTS, Tool, ToolError, ToolHandler
+from app.modules.guardrails import service as guardrails_service
+from app.modules.guardrails.schema import ConfidenceReport, GroundingReport
 from app.modules.structured_extraction import service as structured_extraction_service
 from app.modules.structured_extraction.schema import DocumentType, InvoiceData
 from app.modules.text_extraction import service as text_extraction_service
@@ -40,6 +42,7 @@ RECOVERABLE_CODES = frozenset(
     {
         "text_not_extracted",
         "structured_data_missing",
+        "grounding_required",
         "validation_required",
         "conversion_not_needed",
         "unsupported_currency",
@@ -50,6 +53,8 @@ RECOVERABLE_CODES = frozenset(
 )
 
 MAX_SUMMARY_CHARS = 1500
+# Fields the summary must ask the reader to verify, key fields first (PRD 0008 D8).
+MAX_REVIEW_FIELDS = 6
 
 
 @dataclass
@@ -66,6 +71,8 @@ class DocumentToolContext:
     summary_usage: TokenUsage = field(default_factory=TokenUsage)
     text_done: bool = False
     structured: InvoiceData | None = None
+    grounding: GroundingReport | None = None
+    confidence: ConfidenceReport | None = None
     validation: ValidationReport | None = None
     conversion: ConversionResult | None = None
     summary: str | None = None
@@ -94,11 +101,22 @@ def build_document_tools(ctx: DocumentToolContext) -> list[Tool]:
             handler=_guarded(lambda _args: _extract_structured_data(ctx)),
         ),
         Tool(
+            name="check_grounding",
+            description=(
+                "Check that every extracted value appears in the document's text, and "
+                "re-extract values that do not (deterministic check, bounded retries). "
+                "Returns counts and the values that could not be found. Requires "
+                "extract_structured_data; validate_invoice refuses to run before it."
+            ),
+            parameters=NO_ARGUMENTS,
+            handler=_guarded(lambda _args: _check_grounding(ctx)),
+        ),
+        Tool(
             name="validate_invoice",
             description=(
                 "Check the extracted fields with deterministic code (required fields, "
                 "totals, dates, currency). Returns a status and a list of issues. Requires "
-                "extract_structured_data."
+                "check_grounding."
             ),
             parameters=NO_ARGUMENTS,
             handler=_guarded(lambda _args: _validate_invoice(ctx)),
@@ -175,13 +193,46 @@ def _extract_structured_data(ctx: DocumentToolContext) -> dict[str, Any]:
     )
     ctx._structured_forced = ctx._structured_forced or force
     ctx.structured = extraction.data
+    # A new extraction must be grounded (and validated) again (PRD 0008 D1).
+    ctx.grounding = None
+    ctx.confidence = None
+    ctx.validation = None
     return extraction.data.model_dump(mode="json")
+
+
+def _check_grounding(ctx: DocumentToolContext) -> dict[str, Any]:
+    before = _require_structured(ctx, "check_grounding").model_dump(mode="json")
+    extraction = structured_extraction_service.ground_extraction(ctx.db, ctx.llm, ctx.document_id)
+    assert extraction.grounding is not None
+    report = extraction.grounding.report
+    ctx.structured = extraction.data
+    ctx.grounding = report
+    after = extraction.data.model_dump(mode="json")
+    return {
+        "checked": report.checked,
+        "grounded": report.grounded,
+        "weak": report.weak,
+        "inferred": report.inferred,
+        "ungrounded": report.ungrounded,
+        "retries": extraction.grounding.grounding_retries,
+        "ungrounded_values": [
+            {"field": f.path, "value": f.value} for f in report.ungrounded_fields()
+        ],
+        "changed_fields": [name for name, value in before.items() if after[name] != value],
+    }
 
 
 def _validate_invoice(ctx: DocumentToolContext) -> dict[str, Any]:
     data = _require_structured(ctx, "validate_invoice")
+    if ctx.grounding is None:
+        raise ToolError("grounding_required", "Call check_grounding before validate_invoice.")
     ctx.validation = validation_service.validate_invoice(data, today=ctx.today)
-    return ctx.validation.model_dump(mode="json")
+    ctx.confidence = guardrails_service.score_confidence(data, ctx.grounding, ctx.validation)
+    result = ctx.validation.model_dump(mode="json")
+    if ctx.confidence is not None:
+        result["needs_review"] = ctx.confidence.needs_review
+        result["review_fields"] = ctx.confidence.review_fields
+    return result
 
 
 def _convert_currency(ctx: DocumentToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -210,6 +261,7 @@ def _generate_summary(ctx: DocumentToolContext) -> dict[str, Any]:
     if ctx.structured.document_type is DocumentType.UNKNOWN:
         ctx.summary = prompts.UNKNOWN_SUMMARY  # PRD D5: nothing to summarise, no LLM call
         return {"summary": ctx.summary}
+    review = ctx.confidence.review_fields[:MAX_REVIEW_FIELDS] if ctx.confidence else []
 
     payload = {
         "document_type": ctx.structured.document_type.value,
@@ -217,6 +269,10 @@ def _generate_summary(ctx: DocumentToolContext) -> dict[str, Any]:
         "validation": ctx.validation.model_dump(mode="json"),
         "conversion": ctx.conversion.model_dump(mode="json") if ctx.conversion else None,
         "base_currency": ctx.base_currency,
+        "review": [
+            {"field": field_name(path), "reason": _review_reason(ctx.confidence, path)}
+            for path in review
+        ],
     }
     messages: list[Message] = [
         {"role": "system", "content": prompts.SUMMARY_SYSTEM_PROMPT},
@@ -224,9 +280,12 @@ def _generate_summary(ctx: DocumentToolContext) -> dict[str, Any]:
     ]
     text = _complete(ctx, messages)
     missing = missing_issues(text, ctx.validation)
-    if not text or missing:
+    unverified = missing_review(text, review)
+    if not text or missing or unverified:
         feedback = (
-            prompts.summary_retry_prompt([issue.message for issue in missing])
+            prompts.summary_retry_prompt(
+                [issue.message for issue in missing], [field_name(p) for p in unverified]
+            )
             if text
             else "Your reply was empty. Write the summary, following the same rules."
         )
@@ -241,7 +300,9 @@ def _generate_summary(ctx: DocumentToolContext) -> dict[str, Any]:
                 "invalid_llm_output", "The model returned an empty summary.", fatal=True
             )
         missing = missing_issues(text, ctx.validation)
-    ctx.summary = compose_summary(text, missing)
+        unverified = missing_review(text, review)
+    extra = [prompts.review_sentence([field_name(p) for p in unverified])] if unverified else []
+    ctx.summary = compose_summary(text, missing, extra)
     return {"summary": ctx.summary}
 
 
@@ -308,16 +369,61 @@ def _contains(text: str, keyword: str) -> bool:
     return re.search(rf"(?<![a-z0-9]){words}(?![a-z0-9])", text) is not None
 
 
-def compose_summary(text: str, missing: list[ValidationIssue]) -> str:
-    """The model's text plus one sentence per issue it still missed, capped in length.
+def compose_summary(text: str, missing: list[ValidationIssue], extra: Sequence[str] = ()) -> str:
+    """The model's text plus one sentence per issue (and ``extra`` sentence) it still missed.
 
-    The appended issue messages are never cut; the model's text is shortened instead.
+    The appended sentences are never cut; the model's text is shortened instead.
     """
     text = " ".join(text.split())
-    appendix = " ".join(issue.message for issue in missing)
+    appendix = " ".join([*(issue.message for issue in missing), *extra])
     room = MAX_SUMMARY_CHARS - (len(appendix) + 1 if appendix else 0)
     if len(text) > room:
         cut = text[: max(room - 1, 0)]
         cut = cut.rsplit(" ", 1)[0] if " " in cut else cut
         text = f"{cut}…" if cut else ""
     return " ".join(part for part in (text, appendix) if part)
+
+
+# -- Fields to verify (PRD 0008 D8) ---------------------------------------------------------
+
+_REVIEW_KEYWORDS: dict[str, tuple[str, ...]] = {
+    **_FIELD_KEYWORDS,
+    "invoice_number": ("invoice number",),
+    "vendor_address": ("address",),
+    "vendor_tax_id": ("tax id", "tax number", "registration"),
+    "customer_name": ("customer",),
+    "customer_address": ("address",),
+    "payment_terms": ("terms",),
+}
+_VERIFY_WORDS = ("verify", "verified", "review", "check", "checked", "confirm", "confirmed")
+_LINE_PATH = re.compile(r"line_items\[(\d+)\]\.(\w+)")
+
+
+def field_name(path: str) -> str:
+    """Readable name of a field path: ``line_items[1].amount`` -> ``line 2 amount``."""
+    if match := _LINE_PATH.fullmatch(path):
+        return f"line {int(match.group(1)) + 1} {match.group(2).replace('_', ' ')}"
+    return path.replace("_", " ")
+
+
+def _review_keywords(path: str) -> tuple[str, ...]:
+    if match := _LINE_PATH.fullmatch(path):
+        number = int(match.group(1)) + 1
+        return (f"line {number}", f"item {number}")
+    return _REVIEW_KEYWORDS.get(path, (field_name(path),))
+
+
+def missing_review(summary: str, paths: Sequence[str]) -> list[str]:
+    """Review fields the summary does not ask to verify (all of them without a verify word)."""
+    if not paths:
+        return []
+    text = summary.lower()
+    if not any(_contains(text, word) for word in _VERIFY_WORDS):
+        return list(paths)
+    return [p for p in paths if not any(_contains(text, k) for k in _review_keywords(p))]
+
+
+def _review_reason(confidence: ConfidenceReport | None, path: str) -> str:
+    if confidence is None or path not in confidence.fields:
+        return "could not be confirmed"
+    return confidence.fields[path].reasons[0]

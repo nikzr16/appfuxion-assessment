@@ -98,3 +98,54 @@ describe("MetricsPage", () => {
     expect(await screen.findByRole("button", { name: /try again/i })).toBeInTheDocument();
   });
 });
+
+describe("MetricsPage — guardrails (feature 0008)", () => {
+  const guardrails = {
+    runs_scored: 4,
+    avg_confidence: 0.87,
+    by_label: { high: 2, medium: 1, low: 1 },
+    needs_review: 1,
+    needs_review_rate: 0.25,
+    values_checked: 80,
+    values_grounded: 72,
+    grounding_rate: 0.9,
+    grounding_retry_extractions: 1,
+    transient_retries: 3,
+  };
+
+  it("shows confidence, review share, grounding rate, retries and the label split", async () => {
+    mockApi({ ...HEALTH, "GET /metrics/summary": ok(makeMetrics({ guardrails })) });
+    renderApp("/metrics");
+
+    const section = await screen.findByRole("region", { name: "Guardrails" });
+    expect(within(section).getByText("87%")).toBeInTheDocument();
+    expect(within(section).getByText("25%")).toBeInTheDocument();
+    expect(within(section).getByText("1 of 4 runs")).toBeInTheDocument();
+    expect(within(section).getByText("90%")).toBeInTheDocument();
+    expect(within(section).getByText("72 of 80 values found exactly")).toBeInTheDocument();
+    expect(within(section).getByText("3")).toBeInTheDocument();
+    expect(within(section).getByRole("img", { name: "High: 2 of 4, Medium: 1 of 4, Low: 1 of 4" })).toBeInTheDocument();
+    expect(within(section).getByText("2 · 50%")).toBeInTheDocument();
+  });
+
+  it("explains when nothing has been checked yet", async () => {
+    const empty = {
+      ...guardrails,
+      runs_scored: 0,
+      avg_confidence: null,
+      by_label: { high: 0, medium: 0, low: 0 },
+      needs_review: 0,
+      needs_review_rate: null,
+      values_checked: 0,
+      values_grounded: 0,
+      grounding_rate: null,
+      grounding_retry_extractions: 0,
+      transient_retries: 0,
+    };
+    mockApi({ ...HEALTH, "GET /metrics/summary": ok(makeMetrics({ guardrails: empty })) });
+    renderApp("/metrics");
+
+    const section = await screen.findByRole("region", { name: "Guardrails" });
+    expect(within(section).getByText(/No document in this window has been checked yet/)).toBeInTheDocument();
+  });
+});

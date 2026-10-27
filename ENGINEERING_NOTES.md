@@ -325,6 +325,73 @@ feature number (`0000`, `0001`, ...).
   switch kept in the URL. The two bar colours were checked with a palette validator for
   colour-blind and normal-vision separation in both themes.
 
+### 0008 - Guardrails (grounding, confidence, retries)
+
+- **Hallucination check by code, not by a second model.** The new `guardrails` module is pure
+  (no DB, no LLM): `check_grounding(data, raw_text, method)` looks every non-null extracted
+  value up in the document's own text and marks it `grounded`, `weak`, `ungrounded`,
+  `inferred` or `skipped`, with the page and the character span where it was found. Rules
+  per kind of value: numbers are compared by value under both separator conventions
+  (`1,234.56` = `1.234,56` = `1 234,56`; `(50.00)` = `-50`; `50` = `50.00`); dates are found
+  in any printed form, English and Malay month names included, and a match only through an
+  ambiguous `03/04` form is `weak`; invoice and tax numbers must match exactly (spaces and
+  punctuation ignored) because one wrong digit is a wrong invoice; names, addresses and
+  descriptions match exactly (case, spacing, punctuation and letter-spacing ignored) or
+  fuzzily with `rapidfuzz` (≥ 85, or ≥ 80 for vision text) as `weak`; a currency is
+  `grounded` when its ISO code is printed and `inferred` when only a symbol is (`RM` → MYR).
+  Vision text may also match through common OCR misreads (`O/0`, `l/1`, `S/5`, `B/8`), but
+  only as `weak`. The full text is used even when the model saw a shortened one.
+- **A separate tool the model cannot skip.** Grounding is the agent's `check_grounding`
+  tool, between `extract_structured_data` and `validate_invoice`, so it shows as its own
+  step in the trace and the Extraction lane (and maps onto B4's Extraction Agent). Code
+  enforces it: `validate_invoice` refuses with `grounding_required` until grounding ran for
+  the current extraction, and the summary already requires validation, so no run completes
+  ungrounded. `AGENT_MAX_STEPS` went from 8 to 10 for the extra turn.
+- **Re-ask with feedback, within one budget.** When values are ungrounded, the tool (via
+  `structured_extraction.service.ground_extraction`) asks the model again for the whole
+  object, listing each value that was not found, under its own `grounding_retry` purpose.
+  One budget of 3 extraction calls covers 0003's schema retry and these retries. The attempt
+  with the fewest ungrounded values is kept (ties go to the latest); values still not found
+  are **kept and flagged, not nulled**: the check is a heuristic, and nulling a true value an
+  OCR misread hid would lose data, while the flag makes the doubt visible.
+- **Confidence anyone can recompute.** Right after validation, code scores every field:
+  grounding (1.0 found, 0.9 inferred, 0.7 weak, 0.2 not found) × validation (× 0.5 with an
+  error on the field, × 0.8 with a warning) × source (× 0.9 for vision text). The document
+  score is 60 % weighted field mean (total 3; vendor, number, date, currency and the line
+  items as a group 2; others 1) + 25 % completeness (expected fields present, from 0004's
+  required-field table) + 15 % validation status. Labels: high ≥ 0.85, medium ≥ 0.60, low
+  below. `needs_review` is set when the document is low or a key field (total, vendor,
+  number, date, currency) was not found. Each score keeps its reasons ("Found on page 1",
+  "Close match (88/100)", "Validation warning: …"). No logprobs (see improvements).
+- **Doubt reaches the reader.** Grounding is not a validation issue (0004 checks the
+  document's consistency; grounding checks our reading of it), and the document still ends
+  `completed`. Instead the summary must ask the reader to verify each field that needs
+  review: the same keyword check, single retry and code-appended sentence as 0005's issue
+  coverage.
+- **Transient errors are retried in our seam.** The SDK's own retries are off;
+  `app/core/llm.py` classifies each error (`llm_rate_limited`, `llm_timeout`,
+  `llm_unavailable` are retryable; `llm_quota_exceeded` and other 4xx are not) and retries up
+  to `1 + OPENAI_MAX_RETRIES` attempts with full-jitter exponential backoff (1 s base, 20 s
+  cap) or the server's `Retry-After` (capped at 60 s). Each attempt is measured separately,
+  so it is its own `llm.call` line and ledger row with an `attempt` number, visible in the
+  trace. `FakeLLM` goes through the same loop, so tests script a retryable error and the
+  reply that follows.
+- **Stored where it belongs.** `extractions.grounding` (JSONB) holds the report and the
+  attempt history; the confidence report is part of the run's result (`AgentResult.confidence`,
+  so every run keeps its own), with `overall_confidence` and `needs_review` copied to
+  `agent_runs` columns for metrics; `llm_calls.attempt` counts retries. The API only gains
+  fields: `confidence` on `GET /result`, `grounding` on `GET /extraction`, `attempt` on trace
+  spans and a `guardrails` block on `GET /metrics/summary`. Results from before 0008 stay
+  `null` (no backfill; reprocessing computes them).
+- **UI.** Each extracted value and line-item cell gets a confidence marker: a shield-check
+  icon for high, a `Medium` / `Low` pill otherwise (distinct icons, never colour alone, the
+  score and reasons in a tooltip), and "Not found in document" under values the check could
+  not find. The summary header shows the overall label and score, a "Needs review" banner
+  lists the fields to check, and "Show in text" opens the raw text, highlights the value
+  and scrolls to it. The Metrics page gains a Guardrails section (average confidence, share
+  needing review, grounding rate, grounding and transient retries) and a high / medium / low
+  split bar whose colours were checked with the palette validator in both themes.
+
 ## 2. Prompt design
 
 _TODO per feature: prompt structure, versioning (`PROMPT_VERSION`), output schemas, and how
@@ -395,6 +462,21 @@ hallucination is prevented (fields absent from the document are `null`)._
   (`text_extraction.v1`, `structured_extraction.v1`, `agent.document.v1`, `agent.summary.v1`),
   so tokens, latency and failures can be compared per prompt version when one is bumped.
 
+**0008 - Guardrails**
+- `structured_extraction.v2`: the system prompt is unchanged; the version moved because a
+  new follow-up message exists. When values are not found in the text, the model gets its own
+  previous reply back (as the assistant turn) and one user message listing each value as
+  `- path: 'value'`, asking it to copy each one exactly as printed or use null, change nothing
+  else and return the complete object. The feedback is factual (what was not found), never a
+  hint of what the right value might be, so a retry cannot be steered into a new invention.
+- `agent.document.v2`: the tool order gains step 3, `check_grounding`, with "never skip it:
+  validate_invoice refuses to run before it" — the prompt explains the code guard instead of
+  relying on it alone.
+- `agent.summary.v2`: the payload gains `review` (field name + reason); the prompt asks for
+  one sentence naming every field in it and saying it should be verified. Missing ones are
+  listed in the single retry and, if still missing, code appends "Please verify the vendor
+  and total amount: they could not be confirmed in the document text."
+
 ## 3. Limitations
 
 _TODO per feature: known gaps (for example the static, dated currency-rate table)._
@@ -432,7 +514,8 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
 
 **0003 - Structured extraction**
 - Nothing checks that an extracted value really appears in the text; a confident wrong value
-  passes. Grounding checks and confidence scores are planned for B2, arithmetic checks for 0004.
+  passes. Arithmetic checks came with 0004; since 0008 a grounding check flags values not found
+  in the text and scores confidence (see 0008).
 - A numeric date whose day/month order the document does not reveal (e.g. `03/04/2025`) is
   `null`, so 0004 will report it as missing even though a date was printed.
 - Tokens of a reply rejected by validation are not counted: the OpenAI SDK raises before it
@@ -460,7 +543,7 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
 - The tax-inclusive rule accepts `subtotal = total` whenever tax is set, so an invoice that
   forgot to add its tax passes with only an info note.
 - Each document is checked against itself only: duplicates, vendor history and outliers come
-  with B3; whether a value really appears in the text comes with B2.
+  with B3; whether a value really appears in the text is checked since 0008 (grounding).
 - `today` is the server's local date; the 1-day slack on future dates covers time zones but
   not a wrong server clock.
 
@@ -500,7 +583,7 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
   OpenAI's model page marks the default `gpt-4.1-mini` as deprecated (still priced).
 - A failed call is recorded with 0 tokens because the API returns no usage, and the OpenAI
   SDK's own retries (`OPENAI_MAX_RETRIES`) happen inside one call, so they show up only as
-  a longer latency.
+  a longer latency. (Since 0008 retries are done in our seam and each attempt is a row.)
 - Run start / finish times come from Postgres (`now()`, the transaction start) while steps and
   calls use the app clock, so offsets can be a few ms off; they are clamped at 0.
 - Each call adds one small insert in its own session on the hot path (a few ms next to
@@ -511,6 +594,22 @@ _TODO per feature: known gaps (for example the static, dated currency-rate table
 - The trace view polls every 10 s like the rest of the page, so a running trace lags. Tokens
   per lane are mapped from tool to role until B4 gives each lane its own agent.
 - `embed` calls are recorded, but nothing calls them until B3.
+
+**0008 - Guardrails**
+- Grounding is lexical: it proves a value is *printed somewhere*, not that it is printed in
+  the right place. A total that equals a line amount, or a small quantity like `1` or `2`,
+  is almost always found; 0004's arithmetic checks cover part of that gap.
+- A value the model legitimately reformats beyond the rules (a total written in words, a
+  date with a weekday in between, a vendor shown only in a logo) is reported as not found
+  and costs up to two extra extraction calls; the flag is a prompt to check, not a verdict.
+- Fuzzy thresholds (85 / 80) and the confidence weights were chosen by hand on the sample
+  invoices, not fitted on labelled data.
+- On vision text, grounding compares the extraction with the transcription made by the same
+  family of model; a misread that both steps share is not detected.
+- Confidence of a run is fixed when it completes; changing the formula needs a reprocess to
+  update old runs, and results from before 0008 have none.
+- Worst case, one extraction makes 3 calls and each call 3 attempts with waits of up to
+  20–60 s, so a document can take minutes to fail when OpenAI is down; the trace shows why.
 
 ## 4. Production improvements
 
@@ -537,8 +636,8 @@ retries and rate-limit handling, database backups)._
   transcribed document instead of starting over.
 
 **0003 - Structured extraction**
-- Add grounding (every extracted value must appear, normalised, in the raw text) and
-  per-field confidence; re-ask only for the fields that failed instead of the whole object.
+- Re-ask only for the fields that failed instead of the whole object (grounding and
+  per-field confidence shipped in 0008; it still re-asks the whole object).
 - Record every LLM call (raw reply, tokens, latency, validation errors) in a ledger so
   rejected replies can be inspected and their cost counted; parse the reply ourselves instead
   of through the SDK so usage survives a validation failure.
@@ -591,8 +690,19 @@ retries and rate-limit handling, database backups)._
 - Load prices from configuration or a maintained source, and record cached-input and
   reasoning tokens (`usage.*_tokens_details`) so the estimate matches the bill; set budgets
   and alerts per customer.
-- Retry in our own seam instead of the SDK so each attempt is its own span with its own
-  latency and error.
 - Optionally keep redacted, sampled prompts and replies for debugging, behind access control
   and a short retention.
 - Take run timestamps from the app clock too, so every span uses one clock.
+
+**0008 - Guardrails**
+- Fit the thresholds and weights on a labelled set of real invoices (precision / recall of
+  "not found" per field) and report calibration of the confidence score.
+- Add model logprobs as a signal (mean token logprob per JSON field) and an optional
+  LLM-judge pass for low-confidence fields only.
+- Ground by layout as well as text: check that the total sits near a "Total" label and that
+  line amounts sit in the amount column (B5's table extraction makes this possible).
+- Re-ask only the failed fields with a partial schema once documents are long enough for the
+  saved tokens to matter, and route low-confidence documents to a human review queue with
+  in-place correction that feeds the evaluation set.
+- Add a circuit breaker and a fallback model when the error rate of transient retries rises,
+  and a total deadline per document instead of per attempt.

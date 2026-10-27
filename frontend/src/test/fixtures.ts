@@ -1,8 +1,10 @@
 import type {
   AgentResult,
   AgentRunRead,
+  ConfidenceReport,
   DocumentRead,
   DocumentTrace,
+  FieldConfidence,
   InvoiceData,
   LLMSpan,
   ToolSpan,
@@ -231,6 +233,48 @@ export function makeTrace(overrides: Partial<DocumentTrace> = {}): DocumentTrace
       llm("c6", "summary", 3, 6540, 1600),
     ],
     prices_as_of: "2026-10-27",
+    ...overrides,
+  };
+}
+
+/** A confidence report for `makeResult()`: the vendor is not in the text, everything else is. */
+export function makeConfidence(overrides: Partial<ConfidenceReport> = {}): ConfidenceReport {
+  const field = (path: string, overrides: Partial<FieldConfidence> = {}): FieldConfidence => ({
+    path,
+    score: 1,
+    label: "high",
+    grounding: "grounded",
+    page: 1,
+    start: 8,
+    end: 16,
+    reasons: ["Found in the document text on page 1"],
+    ...overrides,
+  });
+  return {
+    overall: 0.55,
+    label: "low",
+    needs_review: true,
+    review_fields: ["vendor"],
+    components: { fields: 0.8, completeness: 1, validation: 0.3 },
+    fields: {
+      vendor: field("vendor", {
+        score: 0.2,
+        label: "low",
+        grounding: "ungrounded",
+        page: null,
+        start: null,
+        end: null,
+        reasons: ["Not found in the document text"],
+      }),
+      invoice_number: field("invoice_number"),
+      currency: field("currency", {
+        score: 0.9,
+        label: "high",
+        grounding: "inferred",
+        reasons: ["Inferred from the printed symbol 'RM' on page 1"],
+      }),
+      "line_items[0].amount": field("line_items[0].amount", { start: 0, end: 7 }),
+    },
     ...overrides,
   };
 }

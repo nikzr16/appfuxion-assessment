@@ -4,6 +4,7 @@ import logging
 import time
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,7 @@ from app.modules.agent.schema import (
     AgentMode,
     AgentResult,
     AgentRunRead,
+    ConfidenceStats,
     RunStats,
     RunStatus,
     RunTrigger,
@@ -28,6 +30,8 @@ from app.modules.agent.schema import (
 from app.modules.agent.tools import DocumentToolContext, build_document_tools
 from app.modules.documents import service as documents_service
 from app.modules.documents.schema import DocumentStatus, DocumentUploadResponse
+from app.modules.guardrails.schema import ConfidenceLabel
+from app.modules.guardrails.service import HIGH_THRESHOLD, MEDIUM_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -157,8 +161,10 @@ def _complete(db: Session, run: AgentRun, ctx: DocumentToolContext, outcome: Run
         validation=ctx.validation,
         conversion=ctx.conversion,
         summary=ctx.summary,
+        confidence=ctx.confidence,
     )
     usage = outcome.usage + ctx.summary_usage
+    confidence = ctx.confidence
     crud.finish_run(
         db,
         run.id,
@@ -167,6 +173,8 @@ def _complete(db: Session, run: AgentRun, ctx: DocumentToolContext, outcome: Run
             "steps": _dump_steps(outcome.steps),
             "result": result.model_dump(mode="json"),
             "summary": ctx.summary,
+            "overall_confidence": Decimal(str(confidence.overall)) if confidence else None,
+            "needs_review": confidence.needs_review if confidence else None,
             "model": outcome.model or run.model,
             "prompt_tokens": usage.prompt_tokens,
             "completion_tokens": usage.completion_tokens,
@@ -224,6 +232,19 @@ def run_stats(db: Session, *, since: datetime | None = None) -> RunStats:
 def completed_run_ids(db: Session, *, since: datetime | None = None) -> list[uuid.UUID]:
     """Ids of the runs that completed, started since ``since`` (feature 0007 metrics)."""
     return list(crud.completed_ids(db, since=since))
+
+
+def confidence_stats(db: Session, *, since: datetime | None = None) -> ConfidenceStats:
+    """Confidence of the completed runs started since ``since`` (feature 0008 metrics)."""
+    scored, average, needs_review, labels = crud.confidence_totals(
+        db, since=since, high=HIGH_THRESHOLD, medium=MEDIUM_THRESHOLD
+    )
+    return ConfidenceStats(
+        runs_scored=scored,
+        avg_confidence=round(float(average), 3) if average is not None else None,
+        needs_review=needs_review,
+        by_label={label: labels.get(label.value, 0) for label in ConfidenceLabel},
+    )
 
 
 def _round_ms(value: float | None) -> int | None:

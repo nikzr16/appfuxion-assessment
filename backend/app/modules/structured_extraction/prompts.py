@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 
-PROMPT_VERSION = "structured_extraction.v1"
+PROMPT_VERSION = "structured_extraction.v2"
 
 SYSTEM_PROMPT = """\
 You extract structured fields from the text of one financial document (an invoice or a
@@ -70,4 +70,15 @@ def retry_prompt(errors: Sequence[str]) -> str:
         f"{listed}\n"
         "Return the complete corrected object. Use null when the document does not contain "
         "a value."
+    )
+
+
+def grounding_retry_prompt(items: Sequence[tuple[str, str]]) -> str:
+    """Feedback for values the grounding check did not find in the text (feature 0008)."""
+    listed = "\n".join(f"- {path}: '{value}'" for path, value in items)
+    return (
+        "These values were not found in the document text:\n"
+        f"{listed}\n"
+        "Copy each of them exactly as printed in the document, or use null if the document "
+        "does not contain it. Do not change any other value. Return the complete object."
     )
