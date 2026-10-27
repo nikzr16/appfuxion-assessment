@@ -128,15 +128,18 @@ Rule of thumb: **AI does the thinking; code does the maths and keeps the order.*
 | Agent | LLM? | Tools | Source |
 |---|---|---|---|
 | Document Agent (single mode) | yes | extract_text, extract_tables, extract_structured_data, check_grounding, validate_invoice, check_vendor_history, convert_currency, search_similar_invoices, generate_summary | Brief Part 4 (+ B2 grounding, B5 tables, B3 vendor history) |
-| Extraction Agent | yes | extract_text, extract_tables, extract_structured_data | Brief bonus (multi-agent) |
-| Validation Agent | yes — checks are deterministic code | validate_invoice, convert_currency, check_vendor_history | Brief bonus (multi-agent) |
-| Reporting Agent | yes | generate_summary, search_similar_invoices | Brief bonus (multi-agent) |
+| Extraction Agent | yes | extract_text, extract_tables, extract_structured_data, check_grounding | Brief bonus (multi-agent) |
+| Validation Agent | yes — checks are deterministic code | validate_invoice, check_vendor_history, convert_currency | Brief bonus (multi-agent) |
+| Reporting Agent | yes | search_similar_invoices, generate_summary | Brief bonus (multi-agent) |
 | Query Agent | yes | search_invoices, get_vendor_history, submit_answer | Added for the RAG bonus (`POST /query`, the Ask AI chat; memory per conversation) |
 | Coordinator | **no** — plain Python | runs Extraction → Validation → Reporting | Added glue |
 
 - All LLM agents share one `AgentRunner` (OpenAI tool-calling loop with a max-steps limit
   and a recorded tool-call log).
-- `AGENT_MODE=single|multi` (default `multi`).
+- `AGENT_MODE=single|multi` (default `multi`). `multi` (0011): the Coordinator runs the
+  Extraction (≤6 turns), Validation (≤6) and Reporting (≤4) agents in order on one shared tool
+  context, each with only its own tools and a code-written hand-off brief; the first failing
+  agent fails the run. `single`: the Document Agent with every tool (`AGENT_MAX_STEPS`).
 - Code guards: `generate_summary` refuses to run until `validate_invoice` has run, and
   `validate_invoice` refuses until `check_grounding` has run for the current extraction (0008),
   and `extract_structured_data` refuses until `extract_tables` has run after the current

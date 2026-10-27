@@ -3,7 +3,7 @@
  * and token / cost totals per agent lane. Pure functions over `GET /trace`.
  */
 import type { DocumentTrace, LLMSpan, TraceSpan } from "../api/types.ts";
-import { roleOfTool, type AgentRole } from "./agents.ts";
+import { ROLE_ORDER, roleOfTool, type AgentRole } from "./agents.ts";
 import { costMicros, microsToCost } from "./format.ts";
 
 export interface TraceRow {
@@ -83,8 +83,21 @@ function llmSpans(trace: DocumentTrace): LLMSpan[] {
   return trace.spans.filter((span): span is LLMSpan => span.kind === "llm");
 }
 
-/** Tokens and cost per lane: each call counts for the role of the tool step it ran in. */
+/**
+ * Tokens and cost per lane. Multi mode (feature 0011): every call counts for the agent that
+ * made it, its own turns included. Single mode: each call counts for the role of the tool step
+ * it ran in, and the agent's turns belong to no lane (see `planningUsage`).
+ */
 export function laneUsage(trace: DocumentTrace): Partial<Record<AgentRole, Usage>> {
+  if (trace.run?.mode === "multi") {
+    const usage: Partial<Record<AgentRole, Usage>> = {};
+    for (const span of llmSpans(trace)) {
+      const role = span.agent as AgentRole | null;
+      if (role === null || !ROLE_ORDER.includes(role)) continue;
+      usage[role] = addUsage(usage[role] ?? EMPTY_USAGE, span);
+    }
+    return usage;
+  }
   const toolOfStep = new Map<number, string>();
   for (const span of trace.spans) if (span.kind === "tool") toolOfStep.set(span.step_index, span.tool);
 
@@ -99,8 +112,10 @@ export function laneUsage(trace: DocumentTrace): Partial<Record<AgentRole, Usage
   return usage;
 }
 
-/** The agent's own turns (choosing the next tool), which belong to no lane until B4. */
+/** Single mode: the Document Agent's own turns (choosing the next tool), which belong to no
+ * lane. In multi mode each agent's turns are in its lane, so there is nothing to show. */
 export function planningUsage(trace: DocumentTrace): Usage {
+  if (trace.run?.mode === "multi") return EMPTY_USAGE;
   return llmSpans(trace)
     .filter((span) => span.step_index === null)
     .reduce(addUsage, EMPTY_USAGE);

@@ -63,10 +63,14 @@ class Purpose(StrEnum):
 
 
 class Agent(StrEnum):
-    """Which agent made an LLM call (the ``agent`` trace label). B4 adds more."""
+    """Which agent made an LLM call (the ``agent`` trace label)."""
 
     DOCUMENT = "document"
     QUERY = "query"
+    # Multi-agent mode (PRD 0011 D8).
+    EXTRACTION = "extraction"
+    VALIDATION = "validation"
+    REPORTING = "reporting"
 
 
 @dataclass(frozen=True)

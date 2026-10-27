@@ -1,4 +1,5 @@
 import type {
+  AgentPart,
   AgentResult,
   AgentRunRead,
   ConfidenceReport,
@@ -6,8 +7,8 @@ import type {
   DocumentTrace,
   FieldConfidence,
   InvoiceData,
-  LayoutResponse,
   LLMSpan,
+  LayoutResponse,
   ToolSpan,
   ToolStep,
   ValidationIssue,
@@ -133,6 +134,44 @@ export function makeRun(overrides: Partial<AgentRunRead> = {}): AgentRunRead {
     finished_at: "2026-10-27T01:02:12+08:00",
     ...overrides,
   };
+}
+
+/** A completed multi-agent run (feature 0011): each step names its agent. */
+export const MULTI_STEPS: ToolStep[] = [
+  makeStep({ index: 0, turn: 1, agent: "extraction", tool: "extract_text", duration_ms: 44 }),
+  makeStep({ index: 1, turn: 2, agent: "extraction", tool: "extract_structured_data", duration_ms: 2800 }),
+  makeStep({ index: 2, turn: 3, agent: "validation", tool: "validate_invoice", duration_ms: 1 }),
+  makeStep({ index: 3, turn: 4, agent: "reporting", tool: "generate_summary", duration_ms: 1700 }),
+];
+
+export function makeAgentPart(overrides: Partial<AgentPart> = {}): AgentPart {
+  return {
+    agent: "extraction",
+    status: "completed",
+    prompt_version: "agent.extraction.v1",
+    turns: 2,
+    steps: 2,
+    prompt_tokens: 600,
+    completion_tokens: 150,
+    started_at: "2026-10-27T01:02:00+08:00",
+    finished_at: "2026-10-27T01:02:05+08:00",
+    error_code: null,
+    ...overrides,
+  };
+}
+
+export function makeMultiRun(overrides: Partial<AgentRunRead> = {}): AgentRunRead {
+  return makeRun({
+    mode: "multi",
+    agent_prompt_version: "agent.multi.v1",
+    steps: MULTI_STEPS,
+    agents: [
+      makeAgentPart(),
+      makeAgentPart({ agent: "validation", prompt_version: "agent.validation.v1", turns: 1, steps: 1 }),
+      makeAgentPart({ agent: "reporting", prompt_version: "agent.reporting.v1", turns: 1, steps: 1 }),
+    ],
+    ...overrides,
+  });
 }
 
 export const CONFIG = {

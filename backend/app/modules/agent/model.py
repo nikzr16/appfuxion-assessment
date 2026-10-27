@@ -56,6 +56,10 @@ class AgentRun(Base):
     steps: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, default=list, server_default=text("'[]'::jsonb")
     )
+    # ``AgentPart`` dicts in JSON mode: one per agent that started (multi mode, 0011).
+    agents: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
     # ``AgentResult`` in JSON mode once the run has completed.
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)

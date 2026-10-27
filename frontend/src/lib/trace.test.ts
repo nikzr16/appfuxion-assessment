@@ -86,6 +86,28 @@ describe("usage per lane", () => {
   });
 });
 
+describe("laneUsage in multi mode (feature 0011)", () => {
+  const multi = () => {
+    const trace = makeTrace();
+    const agentOf: Record<string, string> = { c1: "extraction", c2: "extraction", c3: "extraction", c4: "validation", c5: "reporting", c6: "reporting" };
+    return makeTrace({
+      run: trace.run && { ...trace.run, mode: "multi" },
+      spans: trace.spans.map((span) => (span.kind === "llm" ? { ...span, agent: agentOf[span.id] ?? null } : span)),
+    });
+  };
+
+  it("counts every call, the agent's own turns included, for the agent that made it", () => {
+    const usage = laneUsage(multi());
+    expect(usage.extraction).toEqual({ calls: 3, tokens: 1_125, cost: "0.000720" });
+    expect(usage.validation).toEqual({ calls: 1, tokens: 375, cost: "0.000240" });
+    expect(usage.reporting).toEqual({ calls: 2, tokens: 750, cost: "0.000480" });
+  });
+
+  it("has no separate planning line", () => {
+    expect(planningUsage(multi())).toEqual({ calls: 0, tokens: 0, cost: null });
+  });
+});
+
 describe("purposeLabel", () => {
   it("names known purposes and falls back for others", () => {
     expect(purposeLabel("agent_loop")).toBe("Agent decides next step");

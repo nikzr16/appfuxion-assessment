@@ -54,7 +54,8 @@ PostgreSQL + pgvector in Docker, and CI. Each backend feature adds a folder unde
 │   │       │                       # score_confidence), matching (normalisation, number / date / identifier / text / currency matchers)
 │   │       ├── agent/              # model (agent_runs; 0010: query_conversations, query_runs), crud, schema, service, router
 │   │       │                       # (+ query_router: /query, /conversations, /query/suggestions), prompts, runner (AgentRunner),
-│   │       │                       # tools (9 document tools), query (0010: Query Agent, its tools and checks)
+│   │       │                       # tools (9 document tools; 0011: per-agent tool sets), query (0010: Query Agent, its tools and checks),
+│   │       │                       # coordinator (0011: multi mode, Extraction → Validation → Reporting agents, plain Python)
 │   │       ├── retrieval/          # 0010: model (invoice_embeddings, pgvector), crud, schema, service (index, embeddings, vendor
 │   │       │                       # history + checks, hybrid search, similar, back-fill), router (/similar, /vendor-history),
 │   │       │                       # rules (pure: normalisation, invoice card, statistics, number tokens), backfill (CLI entry point)
@@ -68,7 +69,7 @@ PostgreSQL + pgvector in Docker, and CI. Each backend feature adds a folder unde
 │   │                               # 0007_guardrails.py (grounding, confidence and attempt columns),
 │   │                               # 0008_vision.py (document_layouts, extractions.line_items_source),
 │   │                               # 0009_retrieval.py (invoice_embeddings + HNSW index, query_conversations, query_runs,
-│   │                               # llm_calls.query_run_id)
+│   │                               # llm_calls.query_run_id), 0010_multi_agent.py (agent_runs.agents)
 │   ├── tests/
 │   │   ├── conftest.py             # test DB, migrate once, client / fake_llm / storage fixtures, no-op pipeline,
 │   │   │                           # no LLM recorder by default (opt in: agent_pipeline, llm_recorder), retry_waits (no backoff sleep)
@@ -82,7 +83,8 @@ PostgreSQL + pgvector in Docker, and CI. Each backend feature adds a folder unde
 │   │   ├── modules/guardrails/     # test_matching, test_service, test_layout_grounding, test_layering
 │   │   ├── modules/validation/     # conftest (make_invoice(), line(), TODAY), test_validate_invoice, test_convert_currency, test_currencies, test_schema, test_layering
 │   │   ├── modules/agent/          # conftest (tool_turn, text_turn, happy_script, invoice_pdf, agent_pipeline), test_runner, test_tools,
-│   │   │                           # test_service, test_router, test_guardrails, test_retrieval (0010 tools + indexing), test_query
+│   │   │                           # test_service, test_router, test_guardrails, test_retrieval (0010 tools + indexing), test_query,
+│   │   │                           # test_coordinator (0011 multi-agent mode)
 │   │   ├── modules/retrieval/      # seed (indexed invoices with designed vectors), test_rules, test_service, test_router, test_layering
 │   │   ├── modules/observability/  # conftest (reuses agent fixtures), test_pricing, test_service, test_router, test_layering
 │   │   ├── modules/client_config/  # test_router, test_service
@@ -225,16 +227,17 @@ forward `/api` to the backend.
 | `ValidationReport` | `validation` | `status`, `issues: ValidationIssue[]` (fixed order); JSON money as decimal strings |
 | `ConversionResult` | `validation` | `original_amount`, `from_currency`, `to_currency`, `rate` (10 significant digits), `converted_amount` (half-up to target minor units), `rate_date: date`, `source` |
 | `AgentMode` / `RunTrigger` / `RunStatus` / `StepStatus` | `agent` | `single \| multi` / `upload \| reprocess` / `running \| completed \| failed` / `ok \| error` |
-| `ToolStep` | `agent` | `index`, `turn` (model turn, 1-based), `tool`, `arguments`, `status`, `result` (exactly what the model was sent; never raw text), `error: {code, message} \| null`, `duration_ms`, `started_at` |
+| `ToolStep` | `agent` | `index`, `turn` (model turn, 1-based; both continue across agents in multi mode), `agent` (0011: `document` in single mode, `extraction` / `validation` / `reporting` in multi; absent on older runs), `tool`, `arguments`, `status`, `result` (exactly what the model was sent; never raw text), `error: {code, message} \| null`, `duration_ms`, `started_at` |
 | `AgentResult` | `agent` | `document_id`, `structured_data: InvoiceData`, `validation: ValidationReport`, `conversion: ConversionResult \| null`, `summary`, `confidence: ConfidenceReport \| null` (0008; null for unknown documents and older results) — body of `GET /result`, stored in `agent_runs.result` |
-| `AgentRunRead` | `agent` | every `agent_runs` column except `result` |
+| `AgentPart` | `agent` | 0011: one agent of a multi-agent run — `agent`, `status` (`completed \| failed`), `prompt_version`, `turns`, `steps`, `prompt_tokens`, `completion_tokens` (agent loop, + the summary call for Reporting), `started_at`, `finished_at`, `error_code` |
+| `AgentRunRead` | `agent` | every `agent_runs` column except `result` (`agents: AgentPart[]` since 0011) |
 | `UsageTotals` | `observability` | `llm_calls`, `failed_calls`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost_usd: Decimal \| null` (sum of known costs; 0 with no calls; null when calls exist but none is priced), `cost_complete` (false when some model is unpriced) |
 | `GroupTotals` | `observability` | `UsageTotals` + `key` (purpose, agent or model), `avg_latency_ms` |
 | `TraceRun` | `observability` | `run_id`, `mode`, `trigger`, `status`, `error_code`, `error`, `started_at`, `finished_at`, `queue_ms` (upload runs only: upload → run start), `processing_ms` (null while running), `run_prompt_tokens`, `run_completion_tokens` (0005 run totals) |
 | `ToolSpan` | `observability` | `kind: "tool"`, `step_index`, `turn`, `tool`, `status`, `error_code`, `started_at`, `offset_ms` (from run start), `duration_ms` |
 | `LLMSpan` | `observability` | `kind: "llm"`, `id`, `step_index` (null for agent-loop turns), `purpose`, `agent`, `model`, `prompt_version`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost_usd`, `status: ok \| error`, `error_code`, `started_at`, `offset_ms`, `duration_ms`, `attempt` (1 = first try; 2+ = transient retry, 0008) |
 | `DocumentTrace` | `observability` | `document_id`, `uploaded_at`, `run: TraceRun \| null`, `llm_calls_recorded` (false for runs before 0007), `totals: UsageTotals`, `by_purpose` / `by_agent: GroupTotals[]` (timeline order), `spans: (ToolSpan \| LLMSpan)[]` (start order; a step before the calls made in it), `prices_as_of` |
-| `MetricsSummary` | `observability` | `window_days`, `since`, `generated_at`, `ledger_since` (earliest ledger row), `documents {total, processing, completed, failed, success_rate}`, `runs: RunStats`, `llm` (`UsageTotals` + `error_rate`, `documents_with_usage`, `avg_tokens_per_document`, `avg_cost_per_document` over completed runs that have ledger rows), `by_model` / `by_purpose: GroupTotals[]` (most tokens first), `guardrails` (0008: `runs_scored`, `avg_confidence`, `by_label`, `needs_review`, `needs_review_rate`, `values_checked`, `values_grounded`, `grounding_rate`, `grounding_retry_extractions`, `transient_retries`), `vision` (0009: `layouts_analysed`, `documents_with_line_item_table`, `tables_found`, `line_items_from_table`, `line_items_from_model`, `line_items_table_share`, `pages_via_vision` (ok `vision_transcription` ledger rows), `multimodal_calls`), `prices_as_of` |
+| `MetricsSummary` | `observability` | `window_days`, `since`, `generated_at`, `ledger_since` (earliest ledger row), `documents {total, processing, completed, failed, success_rate}`, `runs: RunStats`, `llm` (`UsageTotals` + `error_rate`, `documents_with_usage`, `avg_tokens_per_document`, `avg_cost_per_document` over completed runs that have ledger rows), `by_model` / `by_purpose` / `by_agent` (0011; null agent → `unknown`): `GroupTotals[]` (most tokens first), `guardrails` (0008: `runs_scored`, `avg_confidence`, `by_label`, `needs_review`, `needs_review_rate`, `values_checked`, `values_grounded`, `grounding_rate`, `grounding_retry_extractions`, `transient_retries`), `vision` (0009: `layouts_analysed`, `documents_with_line_item_table`, `tables_found`, `line_items_from_table`, `line_items_from_model`, `line_items_table_share`, `pages_via_vision` (ok `vision_transcription` ledger rows), `multimodal_calls`), `prices_as_of` |
 | `ConfidenceStats` (internal) | `agent` | `runs_scored`, `avg_confidence`, `needs_review`, `by_label` — `agent.service.confidence_stats` |
 | `RunStats` | `agent` | `total`, `running`, `completed`, `failed`, `avg_ms`, `p50_ms`, `p95_ms` (completed runs; `percentile_cont`) — `agent.service.run_stats`, part of `MetricsSummary` |
 | `DocumentCounts` (internal) | `documents` | `processing`, `completed`, `failed` — `documents.service.count_by_status` |
@@ -416,15 +419,16 @@ One row per agent run (upload and every reprocess), written by `agent.service`.
 |---|---|---|
 | `id` | `UUID` PK | v4 |
 | `document_id` | `UUID` | FK `documents.id`, `ON DELETE CASCADE` |
-| `mode` | `VARCHAR(20)` | `CHECK` `single` / `multi`; the mode that actually ran (always `single` until B4) |
+| `mode` | `VARCHAR(20)` | `CHECK` `single` / `multi`; the mode that ran (`AGENT_MODE` when the run started; runs before 0011 are all `single`) |
 | `trigger` | `VARCHAR(20)` | `CHECK` `upload` / `reprocess` |
 | `status` | `VARCHAR(20)` | `CHECK` `running` / `completed` / `failed` |
 | `steps` | `JSONB` | `ToolStep[]` in JSON mode, default `[]`; saved after every tool call |
+| `agents` | `JSONB` | 0011: `AgentPart[]`, default `[]`; one entry per agent that started in multi mode (saved as each agent ends); `[]` in single mode |
 | `result` | `JSONB` NULL | `AgentResult` once completed |
 | `summary` | `TEXT` NULL | The final summary |
 | `error_code`, `error` | `VARCHAR(50)` / `TEXT` NULL | Why a run failed |
 | `model` | `VARCHAR(100)` NULL | Model that answered the agent loop |
-| `agent_prompt_version`, `summary_prompt_version` | `VARCHAR(50)` | `agent.document.v2`, `agent.summary.v2` (0008) |
+| `agent_prompt_version`, `summary_prompt_version` | `VARCHAR(50)` | single: `agent.document.vN`; multi: the bundle `agent.multi.v1` (per-agent versions in `agents`); `agent.summary.vN` |
 | `prompt_tokens`, `completion_tokens` | `INTEGER` | `CHECK >= 0`, default 0; agent-loop + summary calls only |
 | `overall_confidence` | `NUMERIC(4,3)` NULL | `CHECK BETWEEN 0 AND 1`; copy of `result.confidence.overall` for metrics (0008) |
 | `needs_review` | `BOOLEAN` NULL | Copy of `result.confidence.needs_review` (0008) |
@@ -534,7 +538,7 @@ Read by `app/core/config.py` from environment variables, then `../.env` / `.env`
 | `POSTGRES_HOST` | `localhost` | `db` inside Compose |
 | `DB_PORT` | `5432` | Host port for the db container / a local backend; Compose pins the backend to 5432 |
 | `DATABASE_URL` | blank | Optional full URL; derived from `POSTGRES_*` when blank |
-| `AGENT_MODE` | `multi` | `single` or `multi`; `multi` logs a warning and runs the single Document Agent until B4 |
+| `AGENT_MODE` | `multi` | `multi`: the Coordinator runs the Extraction, Validation and Reporting agents (0011); `single`: the Document Agent alone |
 | `BASE_CURRENCY` | `MYR` | 3-letter ISO 4217 code; totals in another currency are converted to it (it must be in the rate table for a conversion to succeed) |
 | `AGENT_MAX_STEPS` | `14` | 1–30; most model turns per agent run (`agent_max_steps` when reached); 10 since 0008 added `check_grounding`, 12 since 0009 added `extract_tables`, 14 since 0010 added `check_vendor_history` and `search_similar_invoices` |
 | `QUERY_MAX_STEPS` | `6` | 1–20; most model turns per Ask AI question (0010) |
@@ -600,6 +604,19 @@ refuses with `history_check_required` / `similar_search_required` until both ran
 current validation; the completing transaction also indexes the document
 (`retrieval.service.index_document` in a savepoint). `AgentRunner(..., tool_choice=None)`
 passes `tool_choice` to every model turn when set.
+
+Multi-agent mode (0011, `AGENT_MODE=multi`): `coordinator.run_agents(ctx, llm, content_type,
+*, on_progress)` runs `AGENTS = (EXTRACTION, VALIDATION, REPORTING)`, each an `AgentSpec`
+(agent label, name, prompt version, system prompt, code-written hand-off brief, tool names,
+`max_steps` 6 / 6 / 4, `done(ctx)` check) on one shared `DocumentToolContext`, so the tool
+guards hold across agents. Each agent gets `tools.build_agent_tools(ctx, names)`
+(`EXTRACTION_TOOLS`, `VALIDATION_TOOLS`, `REPORTING_TOOLS`), a fresh conversation,
+`tool_choice="required"` and `AgentRunner(..., agent=…, step_offset=…, turn_offset=…)`, inside
+`bind_trace(agent=…)`. Validation is done when `validate_invoice` and `check_vendor_history`
+succeeded and, when `tools.conversion_needed(ctx)`, `convert_currency` was tried
+(`ctx.conversion_tried`). The first failing agent raises `CoordinatorError` (its message
+starts with the agent's name); later agents never start. `service.run_document_agent` picks
+the mode, and both modes share `_complete` / `_fail`.
 
 Retrieval (0010): `retrieval.service` is called by the agent (and observability) and calls only
 `documents.service`, `structured_extraction.service` + `guardrails.service` (back-fill) and

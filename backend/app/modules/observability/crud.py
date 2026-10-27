@@ -52,10 +52,16 @@ def totals(db: Session, *, since: datetime | None = None) -> Row[Any]:
 
 
 def group_totals(
-    db: Session, *, by: Literal["model", "purpose"], since: datetime | None = None
+    db: Session, *, by: Literal["model", "purpose", "agent"], since: datetime | None = None
 ) -> Sequence[Row[Any]]:
-    """``totals`` per model or purpose (column ``key``), most tokens first."""
-    column = LlmCall.model if by == "model" else LlmCall.purpose
+    """``totals`` per model, purpose or agent (column ``key``), most tokens first."""
+    columns = {
+        "model": LlmCall.model,
+        "purpose": LlmCall.purpose,
+        # Calls made outside any agent have no label, as in the trace (feature 0011).
+        "agent": func.coalesce(LlmCall.agent, "unknown"),
+    }
+    column = columns[by]
     tokens = func.sum(LlmCall.prompt_tokens + LlmCall.completion_tokens)
     query = (
         select(column.label("key"), *_usage_columns())

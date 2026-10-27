@@ -274,6 +274,7 @@ def get_metrics(
         llm=llm,
         by_model=[_group_row(r) for r in crud.group_totals(db, by="model", since=since)],
         by_purpose=[_group_row(r) for r in crud.group_totals(db, by="purpose", since=since)],
+        by_agent=[_group_row(r) for r in crud.group_totals(db, by="agent", since=since)],
         guardrails=_guardrail_metrics(db, since),
         vision=_vision_metrics(db, since),
         retrieval=_retrieval_metrics(db, since),

@@ -1,9 +1,9 @@
 /**
- * Multi-agent view (PRD D19): groups an agent run's tool steps into the three agent roles
- * from the Agent Design table. Until B4 ships, one Document Agent plays all three roles, so
- * the role comes from the tool; B4 only has to change `roleOfStep`.
+ * Multi-agent view (PRD 0006 D19): groups an agent run's tool steps into the three agent
+ * roles. In multi mode (feature 0011) each step names the agent that ran it; in single mode
+ * (and on older runs) one Document Agent plays all three roles, so the role comes from the tool.
  */
-import type { AgentRunRead, ToolStep } from "../api/types.ts";
+import type { AgentPart, AgentRunRead, ToolStep } from "../api/types.ts";
 
 export type AgentRole = "extraction" | "validation" | "reporting" | "other";
 export type LaneStatus = "waiting" | "running" | "done" | "failed" | "skipped";
@@ -17,9 +17,9 @@ export const ROLE_INFO: Record<AgentRole, { name: string; description: string }>
   },
   validation: {
     name: "Validation Agent",
-    description: "Checks totals, dates and currency; converts the total",
+    description: "Checks totals, dates, currency and vendor history; converts the total",
   },
-  reporting: { name: "Reporting Agent", description: "Writes the summary" },
+  reporting: { name: "Reporting Agent", description: "Finds similar invoices and writes the summary" },
   other: { name: "Other tools", description: "Tools outside the three roles" },
 };
 
@@ -39,8 +39,12 @@ export function roleOfTool(tool: string): AgentRole {
   return ROLE_OF_TOOL[tool] ?? "other";
 }
 
+function isRole(agent: string | null | undefined): agent is (typeof ROLE_ORDER)[number] {
+  return ROLE_ORDER.includes(agent as AgentRole);
+}
+
 export function roleOfStep(step: ToolStep): AgentRole {
-  return roleOfTool(step.tool);
+  return isRole(step.agent) ? step.agent : roleOfTool(step.tool);
 }
 
 export interface Lane {
@@ -48,9 +52,47 @@ export interface Lane {
   steps: ToolStep[];
   status: LaneStatus;
   totalMs: number;
+  /** Multi mode: the agent's turns, prompt version and outcome. */
+  part?: AgentPart;
+}
+
+export function isMultiRun(run: AgentRunRead): boolean {
+  return run.mode === "multi";
+}
+
+/** Readable name of an `agent` label (ledger, metrics). */
+export function agentLabel(agent: string): string {
+  if (isRole(agent)) return ROLE_INFO[agent].name;
+  if (agent === "document") return "Document Agent";
+  if (agent === "query") return "Query Agent";
+  return "Outside an agent";
 }
 
 export function buildLanes(run: AgentRunRead): Lane[] {
+  return isMultiRun(run) ? buildAgentLanes(run) : buildRoleLanes(run);
+}
+
+/** Multi mode: one lane per real agent; its status comes from the agent breakdown. */
+function buildAgentLanes(run: AgentRunRead): Lane[] {
+  const steps = [...run.steps].sort((a, b) => a.index - b.index);
+  const parts = new Map((run.agents ?? []).map((part) => [part.agent, part]));
+  // The agent working now: the first one that has not finished.
+  const active = ROLE_ORDER.find((role) => !parts.has(role));
+
+  return ROLE_ORDER.map((role) => {
+    const part = parts.get(role);
+    const laneSteps = steps.filter((step) => roleOfStep(step) === role);
+    let status: LaneStatus;
+    if (part) status = part.status === "failed" ? "failed" : "done";
+    else if (run.status === "running") status = role === active ? "running" : "waiting";
+    else status = "skipped";
+    const totalMs = laneSteps.reduce((sum, step) => sum + step.duration_ms, 0);
+    return { role, steps: laneSteps, status, totalMs, part };
+  });
+}
+
+/** Single mode and older runs: lanes are the roles of the tools one agent called. */
+function buildRoleLanes(run: AgentRunRead): Lane[] {
   const steps = [...run.steps].sort((a, b) => a.index - b.index);
   const latest = steps.at(-1);
   const activeRole: AgentRole = latest ? roleOfStep(latest) : "extraction";

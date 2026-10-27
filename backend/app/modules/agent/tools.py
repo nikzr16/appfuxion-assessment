@@ -65,6 +65,11 @@ MAX_REVIEW_FIELDS = 6
 # Earlier similar invoices handed to the summary (PRD 0010 D6).
 SUMMARY_SIMILAR = 3
 
+# Each multi-agent role's tools, in the order its prompt lists them (PRD 0011 D4).
+EXTRACTION_TOOLS = ("extract_text", "extract_tables", "extract_structured_data", "check_grounding")
+VALIDATION_TOOLS = ("validate_invoice", "check_vendor_history", "convert_currency")
+REPORTING_TOOLS = ("search_similar_invoices", "generate_summary")
+
 
 @dataclass
 class DocumentToolContext:
@@ -86,6 +91,9 @@ class DocumentToolContext:
     confidence: ConfidenceReport | None = None
     validation: ValidationReport | None = None
     conversion: ConversionResult | None = None
+    # ``convert_currency`` got past its "not needed" checks (success or unsupported currency);
+    # the Validation Agent's done check (PRD 0011 D5).
+    conversion_tried: bool = False
     # Vendor history and similar invoices (feature 0010); reset with the validation.
     history: HistoryCheck | None = None
     similar: SimilarInvoices | None = None
@@ -199,6 +207,25 @@ def build_document_tools(ctx: DocumentToolContext) -> list[Tool]:
             handler=_guarded(lambda _args: _generate_summary(ctx)),
         ),
     ]
+
+
+def build_agent_tools(ctx: DocumentToolContext, names: Sequence[str]) -> list[Tool]:
+    """The tools named in ``names``, in that order: one multi-agent role's tool set."""
+    tools = {tool.name: tool for tool in build_document_tools(ctx)}
+    return [tools[name] for name in names]
+
+
+def conversion_needed(ctx: DocumentToolContext) -> bool:
+    """Whether ``convert_currency`` would convert (mirrors its refusals): a document with a
+    total in a currency other than the base currency."""
+    data = ctx.structured
+    return (
+        data is not None
+        and data.document_type is not DocumentType.UNKNOWN
+        and data.currency is not None
+        and data.total_amount is not None
+        and data.currency != ctx.base_currency
+    )
 
 
 def _guarded(handler: Callable[[dict[str, Any]], dict[str, Any]]) -> ToolHandler:
@@ -383,6 +410,7 @@ def _convert_currency(ctx: DocumentToolContext, arguments: dict[str, Any]) -> di
             "conversion_not_needed",
             f"The total is already in {data.currency}; do not convert it.",
         )
+    ctx.conversion_tried = True
     ctx.conversion = validation_service.convert_currency(data.total_amount, data.currency, target)
     return ctx.conversion.model_dump(mode="json")
 
